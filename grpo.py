@@ -1,5 +1,4 @@
-import torch
-from torch.utils.tensorboard import SummaryWriter
+
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
 import os
 import random
@@ -20,6 +19,9 @@ from tensorboardX import SummaryWriter
 class Args:
     num_groups: int = 5
     '''number of groups to generate'''
+    kl_coef: float = 0.01
+    '''coefficient of the kl divergence penalty'''
+
 
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
@@ -179,9 +181,21 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
-    next_obs = torch.Tensor(next_obs).to(device)
-    next_done = torch.zeros(args.num_groups).to(device)
+    # Environment setup
+    # Environment setup
+    initial_obs, _ = envs.envs[0].reset(seed=args.seed)  # Get the initial state from the first environment
+
+    # Sync the state across all environments by manually setting the state in each environment.
+    for i in range(1, args.num_groups):
+        # Manually reset the environment to match the first environment's initial state
+        envs.envs[i].reset(seed=args.seed)
+
+    # Replicate the initial state across all groups
+    next_obs = np.stack([initial_obs] * args.num_groups)  # Replicate the initial state across all groups
+    next_obs = torch.Tensor(next_obs).to(device)  # Convert to tensor for use
+    next_done = torch.zeros(args.num_groups).to(device)  # Initialize done flags for all groups
+
+
 
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
@@ -195,7 +209,6 @@ if __name__ == "__main__":
             global_step += args.num_groups
             obs[step] = next_obs
             dones[step] = next_done
-
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 action, logprob, _ = agent.get_action(next_obs) #select action
@@ -224,6 +237,9 @@ if __name__ == "__main__":
         """take a step in the environment and log data. maybe take n steps instead of 1
         this will be ri in advantages"""
 
+        next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
+        next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
+
         # bootstrap value if not done
         with torch.no_grad():
             #next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -237,7 +253,11 @@ if __name__ == "__main__":
                     nextnonterminal = 1.0 - dones[t + 1]
                     #nextvalues = values[t + 1]
                 #delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = (rewards[t]-np.mean(rewards[t]))/np.std(rewards[t])     #note that I am calculating advantages for each group
+                print(rewards[t])
+                print(torch.mean(rewards[t]))
+                print(torch.std(rewards[t]))
+                advantages[t] = (rewards[t]-torch.mean(rewards[t]))/torch.std(rewards[t])     #note that I am calculating advantages for each group
+            #print(advantages)
             #returns = advantages + values
 
         # flatten the batch but keeping the group structure
@@ -265,6 +285,7 @@ if __name__ == "__main__":
                     b_actions[group_idx, mb_inds].long()
                 )
                 logratio = newlogprob - b_logprobs[group_idx, mb_inds]
+                #print(logratio)
                 ratio = logratio.exp()
 
                 with torch.no_grad():
@@ -280,8 +301,11 @@ if __name__ == "__main__":
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 # Policy loss
+                #print(ratio)
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                #print("pg_loss1", pg_loss1)
+                #print("pg_loss2", pg_loss2)
                 total_loss += torch.max(pg_loss1, pg_loss2).mean()
 
 
@@ -289,7 +313,7 @@ if __name__ == "__main__":
                 #entropy_loss = entropy.mean()
                 #loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
         loss = total_loss/args.num_groups
-        optimizer.zero_grad()
+        '''optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
         optimizer.step()
@@ -299,17 +323,35 @@ if __name__ == "__main__":
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y'''
+        # Instead of stopping training when KL > target_kl, we apply group-wise KL penalty
+        kl_penalties = []
+
+        for group_idx in range(args.num_groups):
+            group_kl = ((b_logprobs[group_idx] - newlogprob[group_idx]).mean()).item()
+            kl_penalties.append(group_kl)
+
+        # Compute KL penalty for all groups
+        mean_kl_penalty = np.mean(kl_penalties)
+
+        # Add KL regularization to loss
+        #loss += args.kl_coef * mean_kl_penalty  # args.kl_coef is a new hyperparameter
+        #print("loss", loss)
+        optimizer.zero_grad()
+        loss.backward()
+
+        nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+        optimizer.step()
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         #writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/policy_loss", total_loss.item(), global_step)
         #writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
         writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        #writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
