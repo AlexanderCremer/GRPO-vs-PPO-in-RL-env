@@ -253,10 +253,11 @@ if __name__ == "__main__":
                     nextnonterminal = 1.0 - dones[t + 1]
                     #nextvalues = values[t + 1]
                 #delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                print(rewards[t])
-                print(torch.mean(rewards[t]))
-                print(torch.std(rewards[t]))
-                advantages[t] = (rewards[t]-torch.mean(rewards[t]))/torch.std(rewards[t])     #note that I am calculating advantages for each group
+                #print(rewards[t])
+                #print(torch.mean(rewards[t]))
+                #print(torch.std(rewards[t]))
+                advantages[t] = torch.nan_to_num((rewards[t] - torch.mean(rewards[t])) / torch.std(rewards[t]), nan=0.0)     #note that I am calculating advantages for each group
+
             #print(advantages)
             #returns = advantages + values
 
@@ -336,7 +337,7 @@ if __name__ == "__main__":
 
         # Add KL regularization to loss
         #loss += args.kl_coef * mean_kl_penalty  # args.kl_coef is a new hyperparameter
-        #print("loss", loss)
+        print("loss", loss)
         optimizer.zero_grad()
         loss.backward()
 
