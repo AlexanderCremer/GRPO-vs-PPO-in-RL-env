@@ -196,16 +196,19 @@ if __name__ == "__main__":
     next_done = torch.zeros(args.num_groups).to(device)  # Initialize done flags for all groups
 
 
-
     for iteration in range(1, args.num_iterations + 1):
+        finish_iteration = np.array([False] * args.num_groups)
+
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             #more iterations, less learning rate
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
-
         for step in range(0, args.num_steps):
+            if finish_iteration.all():
+                break
+
             global_step += args.num_groups
             obs[step] = next_obs
             dones[step] = next_done
@@ -223,7 +226,10 @@ if __name__ == "__main__":
             do we take n amounts of actions per group therefore having to create a loop for each group?
                 but then how do the rewards get calculated? Maybe its just the last reward or discounted sum of rewards """
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+            #print(terminations)
+            #print(reward)
             next_done = np.logical_or(terminations, truncations)
+            finish_iteration = np.logical_or(finish_iteration, next_done)
             rewards[step] = torch.tensor(reward).to(device).view(-1)    #rewards are changed from np array into tensor form
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device) #rewards are changed from np array into tensor form
 
@@ -243,20 +249,19 @@ if __name__ == "__main__":
         # bootstrap value if not done
         with torch.no_grad():
             #next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
+
+            cumulative_rewards = torch.zeros(args.num_groups).to(device)
+            active_mask = torch.ones(args.num_groups, dtype=torch.bool).to(device)  #multiply by 1 if not finished and by 0 if finished
             #lastgaelam = 0
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    #nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - dones[t + 1]
-                    #nextvalues = values[t + 1]
-                #delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                #print(rewards[t])
-                #print(torch.mean(rewards[t]))
-                #print(torch.std(rewards[t]))
-                advantages[t] = torch.nan_to_num((rewards[t] - torch.mean(rewards[t])) / torch.std(rewards[t]), nan=0.0)     #note that I am calculating advantages for each group
+            for t in range(args.num_steps):
+                cumulative_rewards += rewards[t] * active_mask
+
+                # If a reward is 0, stop accumulating for that group
+                active_mask &= (rewards[t] != 0)
+            #print(cumulative_rewards)
+            advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards)) / torch.std(cumulative_rewards), nan=0.0)
+            #print(advantages)
+
 
             #print(advantages)
             #returns = advantages + values
@@ -265,18 +270,21 @@ if __name__ == "__main__":
         b_obs = obs.reshape((args.num_groups, -1) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(args.num_groups, -1)
         b_actions = actions.reshape((args.num_groups, -1) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(args.num_groups, -1)
+        #b_advantages = advantages.reshape(args.num_groups, -1)
 
         #b_returns = returns.reshape(-1)
         #b_values = values.reshape(-1)
 
-        # Optimizing the policy and value network
+        # Optimizing the policy network
         #b_inds = np.arange(args.batch_size)
         clipfracs = []
         b_inds_per_group = [np.arange(args.batch_size // args.num_groups) for _ in range(args.num_groups)]
         total_loss = 0
+
+
         for group_idx in range(args.num_groups):
             np.random.shuffle(b_inds_per_group[group_idx])  # Shuffle per group
+
             for start in range(0, args.batch_size // args.num_groups, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds_per_group[group_idx][start:end]  # Sample from this group only
@@ -286,33 +294,25 @@ if __name__ == "__main__":
                     b_actions[group_idx, mb_inds].long()
                 )
                 logratio = newlogprob - b_logprobs[group_idx, mb_inds]
-                #print(logratio)
                 ratio = logratio.exp()
 
                 with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    # KL divergence calculations
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfrac = ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
                     clipfracs.append(clipfrac)
 
-                #why are we normalizing the advantages?
-                mb_advantages = b_advantages[group_idx, mb_inds]
-                if args.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                # Use precomputed cumulative reward advantages
+                mb_advantages = advantages[group_idx]  # Directly use the 1xG array
 
-                # Policy loss
-                #print(ratio)
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-                #print("pg_loss1", pg_loss1)
-                #print("pg_loss2", pg_loss2)
-                total_loss += torch.max(pg_loss1, pg_loss2).mean()
+                # Policy loss calculation
+                print(mb_advantages, ratio)
+                pg_loss1 = mb_advantages * ratio
+                pg_loss2 = mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                #print(pg_loss1, pg_loss2)
+                total_loss += torch.min(pg_loss1, pg_loss2)#.mean()
 
-
-
-                #entropy_loss = entropy.mean()
-                #loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
         loss = total_loss/args.num_groups
         '''optimizer.zero_grad()
         loss.backward()
