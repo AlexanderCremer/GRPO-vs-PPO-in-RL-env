@@ -229,9 +229,10 @@ if __name__ == "__main__":
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+                print("delta", delta, "rewards", rewards[t], "nextvalues", nextvalues, "nextnonterminal", nextnonterminal, "values", values[t])
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                 #print(rewards)
-                #print(advantages)
+            print(advantages)
             returns = advantages + values
 
         # flatten the batch
@@ -250,11 +251,12 @@ if __name__ == "__main__":
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
-
+                #print(b_obs[mb_inds].shape)
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                #print(newlogprob)
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
-
+                #print(ratio)
                 with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
@@ -286,8 +288,9 @@ if __name__ == "__main__":
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
+                #print(v_loss)
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
-                print(loss)
+                #print(loss)
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)

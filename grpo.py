@@ -260,7 +260,7 @@ if __name__ == "__main__":
                 active_mask &= (rewards[t] != 0)
             #print(cumulative_rewards)
             advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards)) / torch.std(cumulative_rewards), nan=0.0)
-            #print(advantages)
+            print(advantages)
 
 
             #print(advantages)
@@ -282,72 +282,57 @@ if __name__ == "__main__":
         total_loss = 0
 
 
-        for group_idx in range(args.num_groups):
-            np.random.shuffle(b_inds_per_group[group_idx])  # Shuffle per group
+        for epoch in range(args.update_epochs):
+            for group in range(args.num_groups):
+                np.random.shuffle(b_inds_per_group[group])
+                for start in range(0, args.minibatch_size, args.minibatch_size // args.num_minibatches):
+                    end = start + (args.minibatch_size // args.num_minibatches)
+                    mb_inds = b_inds_per_group[group][start:end]
 
-            for start in range(0, args.batch_size // args.num_groups, args.minibatch_size):
-                end = start + args.minibatch_size
-                mb_inds = b_inds_per_group[group_idx][start:end]  # Sample from this group only
+                    mb_obs = b_obs[group, mb_inds]
+                    mb_actions = b_actions[group, mb_inds]
+                    mb_old_logprobs = b_logprobs[group, mb_inds]
+                    mb_advantages = advantages[group].expand(len(mb_inds))
 
-                _, newlogprob, entropy = agent.get_action(
-                    b_obs[group_idx, mb_inds],
-                    b_actions[group_idx, mb_inds].long()
-                )
-                logratio = newlogprob - b_logprobs[group_idx, mb_inds]
-                ratio = logratio.exp()
+                    # Get new policy probabilities
+                    _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
+                    log_ratio = new_logprobs - mb_old_logprobs
+                    ratio = log_ratio.exp()
 
-                with torch.no_grad():
-                    # KL divergence calculations
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfrac = ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
-                    clipfracs.append(clipfrac)
+                    # Policy loss
+                    pg_loss = ratio * mb_advantages
+                    policy_loss = -pg_loss.mean()
 
-                # Use precomputed cumulative reward advantages
-                mb_advantages = advantages[group_idx]  # Directly use the 1xG array
+                    # KL Divergence penalty
+                    kl = (mb_old_logprobs - new_logprobs).mean()
+                    kl_penalty = args.kl_coef * kl
 
-                # Policy loss calculation
-                print(mb_advantages, ratio)
-                pg_loss1 = mb_advantages * ratio
-                pg_loss2 = mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-                #print(pg_loss1, pg_loss2)
-                total_loss += torch.min(pg_loss1, pg_loss2)#.mean()
+                    # Entropy bonus
+                    entropy_bonus = args.ent_coef * entropy.mean()
 
-        loss = total_loss/args.num_groups
-        '''optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-        optimizer.step()
+                    # Total loss
+                    print(policy_loss)
+                    loss = policy_loss + kl_penalty - entropy_bonus
+                    total_loss += loss.item()
 
-        if args.target_kl is not None and approx_kl > args.target_kl:
-            break
+                    # Backpropagate
+                    #print("loss", loss)
 
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y'''
-        # Instead of stopping training when KL > target_kl, we apply group-wise KL penalty
-        kl_penalties = []
-
-        for group_idx in range(args.num_groups):
-            group_kl = ((b_logprobs[group_idx] - newlogprob[group_idx]).mean()).item()
-            kl_penalties.append(group_kl)
-
-        # Compute KL penalty for all groups
-        mean_kl_penalty = np.mean(kl_penalties)
-
-        # Add KL regularization to loss
-        #loss += args.kl_coef * mean_kl_penalty  # args.kl_coef is a new hyperparameter
-        print("loss", loss)
+                    loss.backward()
+                    # For logging
+                    with torch.no_grad():
+                        old_approx_kl = (-log_ratio).mean()
+                        approx_kl = ((ratio - 1) - log_ratio).mean()
+                        clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
+        print(loss)
         optimizer.zero_grad()
-        loss.backward()
-
         nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
         optimizer.step()
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         #writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", total_loss.item(), global_step)
+        #writer.add_scalar("losses/policy_loss", total_loss.item(), global_step)
         #writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
         writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
