@@ -279,64 +279,60 @@ if __name__ == "__main__":
         #b_inds = np.arange(args.batch_size)
         clipfracs = []
         b_inds_per_group = [np.arange(args.batch_size // args.num_groups) for _ in range(args.num_groups)]
-        total_loss = 0
-
 
         for epoch in range(args.update_epochs):
+            total_policy_loss = 0
+            total_kl_penalty = 0
+            total_entropy_bonus = 0
+
             for group in range(args.num_groups):
                 np.random.shuffle(b_inds_per_group[group])
-                for start in range(0, args.minibatch_size, args.minibatch_size // args.num_minibatches):
-                    end = start + (args.minibatch_size // args.num_minibatches)
-                    mb_inds = b_inds_per_group[group][start:end]
 
-                    mb_obs = b_obs[group, mb_inds]
-                    mb_actions = b_actions[group, mb_inds]
-                    mb_old_logprobs = b_logprobs[group, mb_inds]
-                    mb_advantages = advantages[group].expand(len(mb_inds))
+                mb_inds = b_inds_per_group[group]  # Use all indices at once
+                mb_obs = b_obs[group, mb_inds]
+                mb_actions = b_actions[group, mb_inds]
+                mb_old_logprobs = b_logprobs[group, mb_inds]
+                mb_advantage = advantages[group]  # Use the single advantage per group
 
-                    # Get new policy probabilities
-                    _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
-                    log_ratio = new_logprobs - mb_old_logprobs
-                    ratio = log_ratio.exp()
+                # Get new policy probabilities
+                _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
+                log_ratio = new_logprobs - mb_old_logprobs
+                ratio = log_ratio.exp()
 
-                    # Policy loss
-                    pg_loss1 = ratio * mb_advantages
-                    pg_loss2 = torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * mb_advantages
-                    policy_loss = -torch.min(pg_loss1, pg_loss2).mean()
+                # Policy loss with clipping
+                pg_loss1 = ratio * mb_advantage
+                pg_loss2 = torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * mb_advantage
+                policy_loss = -torch.min(pg_loss1, pg_loss2).mean()
 
-                    # KL Divergence penalty
-                    kl = (mb_old_logprobs - new_logprobs).mean()
-                    kl_penalty = args.kl_coef * kl
+                # KL Divergence penalty
+                kl = (mb_old_logprobs - new_logprobs).mean()
+                kl_penalty = args.kl_coef * kl
 
-                    # Entropy bonus
-                    entropy_bonus = args.ent_coef * entropy.mean()
+                # Entropy bonus
+                entropy_bonus = args.ent_coef * entropy.mean()
 
-                    # Total loss
-                    #print(policy_loss)
-                    loss = policy_loss + kl_penalty - entropy_bonus
-                    total_loss += loss.item()
+                # Accumulate losses across groups
+                total_policy_loss += policy_loss
+                total_kl_penalty += kl_penalty
+                total_entropy_bonus += entropy_bonus
 
-                    # Backpropagate
-                    #print("loss", loss)
+            # Compute the mean loss over all groups
+            final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
+            print(final_policy_loss)
 
-                    loss.backward()
-                    # For logging
-                    with torch.no_grad():
-                        old_approx_kl = (-log_ratio).mean()
-                        approx_kl = ((ratio - 1) - log_ratio).mean()
-                        clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
-        print(loss)
-        optimizer.zero_grad()
-        nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-        optimizer.step()
+            # Backpropagation
+            optimizer.zero_grad()
+            final_policy_loss.backward()
+            nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+            optimizer.step()
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         #writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         #writer.add_scalar("losses/policy_loss", total_loss.item(), global_step)
         #writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
+        #writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
+        #writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         #writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
