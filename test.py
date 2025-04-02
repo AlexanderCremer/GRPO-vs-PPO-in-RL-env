@@ -317,7 +317,8 @@ if __name__ == "__main__":
                 total_entropy_bonus += entropy_bonus
 
             # Compute the mean loss over all groups
-            final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
+            #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
+            final_policy_loss = (total_policy_loss + total_kl_penalty) / args.num_groups
             print(final_policy_loss)
 
             # Backpropagation
