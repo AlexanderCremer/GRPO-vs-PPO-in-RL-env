@@ -45,7 +45,8 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-5
+    # best so far 2.5e-2
+    learning_rate: float = 2.5e-2
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -129,7 +130,8 @@ class Agent(nn.Module):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    args.batch_size = int(args.num_envs * args.num_steps)
+    # args.batch_size = int(args.num_envs * args.num_steps)
+    args.batch_size = int(4 * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
@@ -270,7 +272,6 @@ if __name__ == "__main__":
         b_obs = obs.reshape((args.num_groups, -1) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(args.num_groups, -1)
         b_actions = actions.reshape((args.num_groups, -1) + envs.single_action_space.shape)
-        print(b_obs.shape)
         #b_advantages = advantages.reshape(args.num_groups, -1)
 
         #b_returns = returns.reshape(-1)
@@ -280,6 +281,7 @@ if __name__ == "__main__":
         #b_inds = np.arange(args.batch_size)
         clipfracs = []
         b_inds_per_group = [np.arange(args.batch_size // args.num_groups) for _ in range(args.num_groups)]
+        #print(b_inds_per_group)
 
         for epoch in range(args.update_epochs):
             total_policy_loss = 0
@@ -287,20 +289,18 @@ if __name__ == "__main__":
             total_entropy_bonus = 0
 
             for group in range(args.num_groups):
-                np.random.shuffle(b_inds_per_group[group])
+                #np.random.shuffle(b_inds_per_group[group])
 
                 mb_inds = b_inds_per_group[group]  # Use all indices at once
                 mb_obs = b_obs[group, mb_inds]
                 mb_actions = b_actions[group, mb_inds]
                 mb_old_logprobs = b_logprobs[group, mb_inds]
                 mb_advantage = advantages[group]  # Use the single advantage per group
-                print(mb_advantage.shape)
                 # Get new policy probabilities
                 _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
                 log_ratio = new_logprobs - mb_old_logprobs
 
                 ratio = log_ratio.exp()
-                print(ratio.shape)
 
                 # Policy loss with clipping
                 pg_loss1 = -ratio * mb_advantage
@@ -322,7 +322,7 @@ if __name__ == "__main__":
             # Compute the mean loss over all groups
             #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
             final_policy_loss = (total_policy_loss + total_kl_penalty) / args.num_groups
-            print(final_policy_loss)
+            #print(final_policy_loss)
 
             # Backpropagation
             optimizer.zero_grad()
