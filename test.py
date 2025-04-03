@@ -45,7 +45,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 2.5e-5
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -270,6 +270,7 @@ if __name__ == "__main__":
         b_obs = obs.reshape((args.num_groups, -1) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(args.num_groups, -1)
         b_actions = actions.reshape((args.num_groups, -1) + envs.single_action_space.shape)
+        print(b_obs.shape)
         #b_advantages = advantages.reshape(args.num_groups, -1)
 
         #b_returns = returns.reshape(-1)
@@ -293,16 +294,18 @@ if __name__ == "__main__":
                 mb_actions = b_actions[group, mb_inds]
                 mb_old_logprobs = b_logprobs[group, mb_inds]
                 mb_advantage = advantages[group]  # Use the single advantage per group
-
+                print(mb_advantage.shape)
                 # Get new policy probabilities
                 _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
                 log_ratio = new_logprobs - mb_old_logprobs
+
                 ratio = log_ratio.exp()
+                print(ratio.shape)
 
                 # Policy loss with clipping
-                pg_loss1 = ratio * mb_advantage
-                pg_loss2 = torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * mb_advantage
-                policy_loss = -torch.min(pg_loss1, pg_loss2).mean()
+                pg_loss1 = -ratio * mb_advantage
+                pg_loss2 = -torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * mb_advantage
+                policy_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # KL Divergence penalty
                 kl = (mb_old_logprobs - new_logprobs).mean()
