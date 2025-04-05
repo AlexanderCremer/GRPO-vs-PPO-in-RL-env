@@ -14,10 +14,12 @@ import tyro
 from torch.distributions.categorical import Categorical
 from tensorboardX import SummaryWriter
 # Add this import at the top of your script
+import matplotlib.pyplot as plt
+
 
 @dataclass
 class Args:
-    num_groups: int = 8
+    num_groups: int = 5
     '''number of groups to generate'''
     kl_coef: float = 0.01
     '''coefficient of the kl divergence penalty'''
@@ -43,13 +45,14 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    # best so far 2.5e-2
+    learning_rate: float = 2.5e-2
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 200
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -59,7 +62,7 @@ class Args:
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 6
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -129,7 +132,8 @@ class Agent(nn.Module):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    args.batch_size = int(args.num_envs * args.num_steps)
+    # args.batch_size = int(args.num_envs * args.num_steps)
+    args.batch_size = int(args.num_groups * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
@@ -195,6 +199,7 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)  # Convert to tensor for use
     next_done = torch.zeros(args.num_groups).to(device)  # Initialize done flags for all groups
 
+    mean_reward = np.zeros(args.num_iterations)
 
     for iteration in range(1, args.num_iterations + 1):
         finish_iteration = np.array([False] * args.num_groups)
@@ -261,7 +266,8 @@ if __name__ == "__main__":
             #print(cumulative_rewards - torch.mean(cumulative_rewards))
             advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards), nan=0.0)
             #print(advantages)
-
+        #print(cumulative_rewards)
+        mean_reward[iteration-1] = torch.max(cumulative_rewards)
 
             #print(advantages)
             #returns = advantages + values
@@ -271,7 +277,7 @@ if __name__ == "__main__":
         b_logprobs = logprobs.reshape(args.num_groups, -1)
         b_actions = actions.reshape((args.num_groups, -1) + envs.single_action_space.shape)
         #b_advantages = advantages.reshape(args.num_groups, -1)
-
+        #print(b_logprobs[4])
         #b_returns = returns.reshape(-1)
         #b_values = values.reshape(-1)
 
@@ -279,68 +285,74 @@ if __name__ == "__main__":
         #b_inds = np.arange(args.batch_size)
         clipfracs = []
         b_inds_per_group = [np.arange(args.batch_size // args.num_groups) for _ in range(args.num_groups)]
-        total_loss = 0
-
+        #print(b_inds_per_group)
 
         for epoch in range(args.update_epochs):
+            total_policy_loss = 0
+            total_kl_penalty = 0
+            total_entropy_bonus = 0
+
             for group in range(args.num_groups):
-                np.random.shuffle(b_inds_per_group[group])
-                for start in range(0, args.minibatch_size, args.minibatch_size // args.num_minibatches):
-                    end = start + (args.minibatch_size // args.num_minibatches)
-                    mb_inds = b_inds_per_group[group][start:end]
+                #np.random.shuffle(b_inds_per_group[group])
 
-                    mb_obs = b_obs[group, mb_inds]
-                    mb_actions = b_actions[group, mb_inds]
-                    mb_old_logprobs = b_logprobs[group, mb_inds]
-                    mb_advantages = advantages[group].expand(len(mb_inds))
+                mb_inds = b_inds_per_group[group]  # Use all indices at once
+                mb_obs = b_obs[group, mb_inds]
+                mb_actions = b_actions[group, mb_inds]
+                mb_old_logprobs = b_logprobs[group, mb_inds]
+                mb_advantage = advantages[group]  # Use the single advantage per group
+                # Get new policy probabilities
+                _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
+                log_ratio = new_logprobs - mb_old_logprobs
+                #print(mb_old_logprobs)
+                ratio = log_ratio.exp()
 
-                    # Get new policy probabilities
-                    _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
-                    log_ratio = new_logprobs - mb_old_logprobs
-                    ratio = log_ratio.exp()
+                # Policy loss with clipping
+                pg_loss1 = -ratio * mb_advantage
+                pg_loss2 = -torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * mb_advantage
+                policy_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                    # Policy loss
-                    pg_loss1 = ratio * mb_advantages
-                    pg_loss2 = torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * mb_advantages
-                    policy_loss = -torch.min(pg_loss1, pg_loss2).mean()
+                # KL Divergence penalty
+                kl = (mb_old_logprobs - new_logprobs).mean()
+                kl_penalty = args.kl_coef * kl
 
-                    # KL Divergence penalty
-                    kl = (mb_old_logprobs - new_logprobs).mean()
-                    kl_penalty = args.kl_coef * kl
+                # Entropy bonus
+                entropy_bonus = args.ent_coef * entropy.mean()
 
-                    # Entropy bonus
-                    entropy_bonus = args.ent_coef * entropy.mean()
+                # Accumulate losses across groups
+                total_policy_loss += policy_loss
+                total_kl_penalty += kl_penalty
+                total_entropy_bonus += entropy_bonus
 
-                    # Total loss
-                    #print(policy_loss)
-                    loss = policy_loss + kl_penalty - entropy_bonus
-                    total_loss += loss.item()
+            # Compute the mean loss over all groups
+            #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
+            final_policy_loss = (total_policy_loss + total_kl_penalty) / args.num_groups
+            #print(final_policy_loss)
 
-                    # Backpropagate
-                    #print("loss", loss)
-
-                    loss.backward()
-                    # For logging
-                    with torch.no_grad():
-                        old_approx_kl = (-log_ratio).mean()
-                        approx_kl = ((ratio - 1) - log_ratio).mean()
-                        clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
-        print(loss)
-        optimizer.zero_grad()
-        nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-        optimizer.step()
+            # Backpropagation
+            optimizer.zero_grad()
+            final_policy_loss.backward()
+            nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+            optimizer.step()
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         #writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         #writer.add_scalar("losses/policy_loss", total_loss.item(), global_step)
         #writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
+        #writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
+        #writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         #writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-
+    plt.figure(figsize=(8, 5))
+    smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
+    plt.plot(np.arange(len(smoothed_mean_rewards)), smoothed_mean_rewards, label="Mean Reward")
+    plt.xlabel("Iteration")
+    plt.ylabel("Mean Reward")
+    plt.title("Mean Reward Over Iterations")
+    plt.legend()
+    plt.savefig("mean_reward_over_iterations_GRPO_g5_max.png")
+    plt.show()
     envs.close()
     writer.close()

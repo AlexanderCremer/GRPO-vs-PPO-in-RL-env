@@ -351,7 +351,7 @@ if __name__ == "__main__":
     plt.ylabel("Mean Reward")
     plt.title("Mean Reward Over Iterations")
     plt.legend()
-    plt.savefig("mean_reward_over_iterations_GRPO.png")
+    plt.savefig("mean_reward_over_iterations_GRPO_g10_max.png")
     plt.show()
     envs.close()
     writer.close()
