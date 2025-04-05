@@ -45,7 +45,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
     # best so far 2.5e-2
     learning_rate: float = 2.5e-2
@@ -133,6 +133,7 @@ class Agent(nn.Module):
 if __name__ == "__main__":
     args = tyro.cli(Args)
     # args.batch_size = int(args.num_envs * args.num_steps)
+    args.total_timesteps = args.total_timesteps * args.num_groups
     args.batch_size = int(args.num_groups * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
