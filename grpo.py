@@ -17,7 +17,7 @@ from tensorboardX import SummaryWriter
 
 @dataclass
 class Args:
-    num_groups: int = 5
+    num_groups: int = 8
     '''number of groups to generate'''
     kl_coef: float = 0.01
     '''coefficient of the kl divergence penalty'''

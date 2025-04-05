@@ -14,6 +14,8 @@ import tyro
 from torch.distributions.categorical import Categorical
 from tensorboardX import SummaryWriter
 # Add this import at the top of your script
+import matplotlib.pyplot as plt
+
 
 @dataclass
 class Args:
@@ -43,14 +45,14 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     # best so far 2.5e-2
     learning_rate: float = 2.5e-2
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 200
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -60,7 +62,7 @@ class Args:
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 6
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -131,7 +133,7 @@ class Agent(nn.Module):
 if __name__ == "__main__":
     args = tyro.cli(Args)
     # args.batch_size = int(args.num_envs * args.num_steps)
-    args.batch_size = int(4 * args.num_steps)
+    args.batch_size = int(args.num_groups * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
@@ -197,6 +199,7 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)  # Convert to tensor for use
     next_done = torch.zeros(args.num_groups).to(device)  # Initialize done flags for all groups
 
+    mean_reward = np.zeros(args.num_iterations)
 
     for iteration in range(1, args.num_iterations + 1):
         finish_iteration = np.array([False] * args.num_groups)
@@ -263,7 +266,7 @@ if __name__ == "__main__":
             #print(cumulative_rewards - torch.mean(cumulative_rewards))
             advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards), nan=0.0)
             #print(advantages)
-
+        mean_reward[iteration-1] = torch.mean(cumulative_rewards)
 
             #print(advantages)
             #returns = advantages + values
@@ -341,6 +344,14 @@ if __name__ == "__main__":
         #writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-
+    plt.figure(figsize=(8, 5))
+    smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
+    plt.plot(np.arange(len(smoothed_mean_rewards)), smoothed_mean_rewards, label="Mean Reward")
+    plt.xlabel("Iteration")
+    plt.ylabel("Mean Reward")
+    plt.title("Mean Reward Over Iterations")
+    plt.legend()
+    plt.savefig("mean_reward_over_iterations_GRPO.png")
+    plt.show()
     envs.close()
     writer.close()

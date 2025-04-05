@@ -13,6 +13,8 @@ import tyro
 from torch.distributions.categorical import Categorical
 from tensorboardX import SummaryWriter
 # Add this import at the top of your script
+import matplotlib.pyplot as plt
+
 
 @dataclass
 class Args:
@@ -36,13 +38,13 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 5
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 200
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -182,6 +184,9 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
+    mean_reward = np.zeros(args.num_iterations)
+
+
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -229,11 +234,20 @@ if __name__ == "__main__":
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                print("delta", delta, "rewards", rewards[t], "nextvalues", nextvalues, "nextnonterminal", nextnonterminal, "values", values[t])
+                #print("delta", delta, "rewards", rewards[t], "nextvalues", nextvalues, "nextnonterminal", nextnonterminal, "values", values[t])
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                 #print(rewards)
-            print(advantages)
+            #print(advantages)
             returns = advantages + values
+
+            cumulative_rewards = torch.zeros(args.num_envs).to(device)
+            active_mask = torch.ones(args.num_envs, dtype=torch.bool).to(device)  #multiply by 1 if not finished and by 0 if finished
+            for t in range(args.num_steps):
+                cumulative_rewards += rewards[t] * active_mask
+
+                # If a reward is 0, stop accumulating for that parallel env
+                active_mask &= (rewards[t] != 0)
+        mean_reward[iteration-1] = torch.mean(cumulative_rewards)
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
@@ -314,6 +328,16 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+
+    plt.figure(figsize=(8, 5))
+    smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
+    plt.plot(np.arange(len(smoothed_mean_rewards)), smoothed_mean_rewards, label="Mean Reward")
+    plt.xlabel("Iteration")
+    plt.ylabel("Mean Reward")
+    plt.title("Mean Reward Over Iterations")
+    plt.legend()
+    plt.savefig("mean_reward_over_iterations_PPO.png")
+    plt.show()
 
     envs.close()
     writer.close()
