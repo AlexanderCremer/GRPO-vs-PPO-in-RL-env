@@ -41,6 +41,7 @@ class Args:
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
+
     """the learning rate of the optimizer"""
     num_envs: int = 5
     """the number of parallel game environments"""
@@ -247,7 +248,7 @@ if __name__ == "__main__":
 
                 # If a reward is 0, stop accumulating for that parallel env
                 active_mask &= (rewards[t] != 0)
-        mean_reward[iteration-1] = torch.mean(cumulative_rewards)
+        mean_reward[iteration-1] = torch.max(cumulative_rewards)
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
@@ -333,10 +334,10 @@ if __name__ == "__main__":
     smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
     plt.plot(np.arange(len(smoothed_mean_rewards)), smoothed_mean_rewards, label="Mean Reward")
     plt.xlabel("Iteration")
-    plt.ylabel("Mean Reward")
-    plt.title("Mean Reward Over Iterations")
+    plt.ylabel("Max Reward")
+    plt.title("Max Reward Over Iterations")
     plt.legend()
-    plt.savefig("mean_reward_over_iterations_PPO.png")
+    plt.savefig("reward_over_iterations_PPO_max.png")
     plt.show()
 
     envs.close()

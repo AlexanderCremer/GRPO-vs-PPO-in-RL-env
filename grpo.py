@@ -15,11 +15,12 @@ from torch.distributions.categorical import Categorical
 from tensorboardX import SummaryWriter
 # Add this import at the top of your script
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 @dataclass
 class Args:
-    num_groups: int = 5
+    num_groups: int = 8
     '''number of groups to generate'''
     kl_coef: float = 0.01
     '''coefficient of the kl divergence penalty'''
@@ -39,7 +40,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
@@ -130,8 +131,11 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy()#, self.critic(x)
 
 
-if __name__ == "__main__":
+def train(G):
+    success = 0
+
     args = tyro.cli(Args)
+    args.num_groups = G
     # args.batch_size = int(args.num_envs * args.num_steps)
     args.total_timesteps = args.total_timesteps * args.num_groups
     args.batch_size = int(args.num_groups * args.num_steps)
@@ -269,9 +273,11 @@ if __name__ == "__main__":
             #print(advantages)
         #print(cumulative_rewards)
         mean_reward[iteration-1] = torch.max(cumulative_rewards)
+        if any(r >= 200 for r in cumulative_rewards):
+            success += 1
 
-            #print(advantages)
-            #returns = advantages + values
+        #print(advantages)
+        #returns = advantages + values
 
         # flatten the batch but keeping the group structure
         b_obs = obs.reshape((args.num_groups, -1) + envs.single_observation_space.shape)
@@ -317,12 +323,12 @@ if __name__ == "__main__":
                 kl_penalty = args.kl_coef * kl
 
                 # Entropy bonus
-                entropy_bonus = args.ent_coef * entropy.mean()
+                #entropy_bonus = args.ent_coef * entropy.mean()
 
                 # Accumulate losses across groups
                 total_policy_loss += policy_loss
                 total_kl_penalty += kl_penalty
-                total_entropy_bonus += entropy_bonus
+                #total_entropy_bonus += entropy_bonus
 
             # Compute the mean loss over all groups
             #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
@@ -346,14 +352,22 @@ if __name__ == "__main__":
         #writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+    sns.set(style="whitegrid")
     plt.figure(figsize=(8, 5))
     smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
-    plt.plot(np.arange(len(smoothed_mean_rewards)), smoothed_mean_rewards, label="Mean Reward")
+    sns.lineplot(x=np.arange(len(smoothed_mean_rewards)), y=smoothed_mean_rewards, label="max Reward", color="red")
+
     plt.xlabel("Iteration")
-    plt.ylabel("Mean Reward")
-    plt.title("Mean Reward Over Iterations")
+    plt.ylabel("Max Reward")
+    plt.title("Max Reward Over Iterations")
     plt.legend()
-    plt.savefig("mean_reward_over_iterations_GRPO_g5_max.png")
+    plt.savefig(f"reward_over_iterations_GRPO_g{args.num_groups}_max.png")
     plt.show()
     envs.close()
     writer.close()
+    return success
+
+if __name__ == "__main__":
+
+    a = train(10)
+    print("Successes:", a)
