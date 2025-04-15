@@ -26,7 +26,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "PPO"
     """the wandb's project name"""
@@ -337,7 +337,7 @@ if __name__ == "__main__":
     plt.ylabel("Max Reward")
     plt.title("Max Reward Over Iterations")
     plt.legend()
-    plt.savefig("reward_over_iterations_PPO_max.png")
+    plt.savefig("plots/reward_over_iterations_PPO_max.png")
     plt.show()
 
     envs.close()

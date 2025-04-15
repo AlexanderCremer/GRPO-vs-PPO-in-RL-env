@@ -16,6 +16,7 @@ from tensorboardX import SummaryWriter
 # Add this import at the top of your script
 import matplotlib.pyplot as plt
 import seaborn as sns
+import tensorboard as tb
 
 
 @dataclass
@@ -34,9 +35,9 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "PPO"
+    wandb_project_name: str = "GRPO"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -150,7 +151,7 @@ def train(G):
             entity=args.wandb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=run_name,
+            name=f"GRPO_G{args.num_groups}",
             monitor_gym=True,
             save_code=True,
         )
@@ -342,16 +343,20 @@ def train(G):
             optimizer.step()
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        #writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        #writer.add_scalar("losses/policy_loss", total_loss.item(), global_step)
-        #writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        #writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        #writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        #writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        wandb.log({
+            "charts/learning_rate": optimizer.param_groups[0]["lr"],
+            "charts/mean_reward": cumulative_rewards.mean().item(),
+            "charts/max_reward": cumulative_rewards.max().item(),
+            "losses/policy_loss": final_policy_loss.item(),
+            "charts/SPS": int(global_step / (time.time() - start_time)),
+        }, step=global_step)
+
+        '''writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
+        writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
+        writer.add_scalar("losses/policy_loss", final_policy_loss.item(), global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)'''
     sns.set(style="whitegrid")
     plt.figure(figsize=(8, 5))
     smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
@@ -361,13 +366,14 @@ def train(G):
     plt.ylabel("Max Reward")
     plt.title("Max Reward Over Iterations")
     plt.legend()
-    plt.savefig(f"reward_over_iterations_GRPO_g{args.num_groups}_max.png")
-    plt.show()
+    #plt.savefig(f"plots/reward_over_iterations_GRPO_g{args.num_groups}_max.png")
+    #plt.show()
     envs.close()
     writer.close()
+    wandb.finish()
     return success
 
 if __name__ == "__main__":
 
-    a = train(10)
+    a = train(5)
     print("Successes:", a)

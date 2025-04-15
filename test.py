@@ -25,7 +25,7 @@ plt.legend(title="Successes", loc="upper left", fontsize=10)
 plt.grid(True, linestyle="--", alpha=0.7)
 
 # Saving the plot as a high-quality PNG
-plt.savefig(f"successes_over_group_size.png", dpi=300, bbox_inches="tight")
+plt.savefig(f"plots/successes_over_group_size.png", dpi=300, bbox_inches="tight")
 
 # Show the plot
 plt.show()
