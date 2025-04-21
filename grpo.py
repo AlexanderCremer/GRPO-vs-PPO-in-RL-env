@@ -129,7 +129,7 @@ class Agent(nn.Module):
         probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy()#, self.critic(x)
+        return action, probs.log_prob(action), probs.entropy()
 
 
 def train(G):
@@ -182,6 +182,7 @@ def train(G):
     obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_groups) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_groups)).to(device)
+    logits = torch.zeros((args.num_steps, args.num_groups)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_groups)).to(device)
     dones = torch.zeros((args.num_steps, args.num_groups)).to(device)
     #values = torch.zeros((args.num_steps, args.num_groups)).to(device)
@@ -229,6 +230,7 @@ def train(G):
                 #values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
+            logits[step] = action
 
             # TRY NOT TO MODIFY: execute the game and log data.
             #taking action in the environment
@@ -320,6 +322,13 @@ def train(G):
                 policy_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # KL Divergence penalty
+
+                """new_probs = new_logprobs.exp()
+                old_probs = mb_old_logprobs.exp()
+                prob_ratio = old_probs / new_probs
+                kl_elements = prob_ratio - torch.log(prob_ratio) - 1
+                kl_penalty = args.kl_coef * kl_elements.mean()"""
+
                 kl = (mb_old_logprobs - new_logprobs).mean()
                 kl_penalty = args.kl_coef * kl
 
@@ -343,20 +352,20 @@ def train(G):
             optimizer.step()
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        wandb.log({
+        '''wandb.log({
             "charts/learning_rate": optimizer.param_groups[0]["lr"],
             "charts/mean_reward": cumulative_rewards.mean().item(),
             "charts/max_reward": cumulative_rewards.max().item(),
             "losses/policy_loss": final_policy_loss.item(),
             "charts/SPS": int(global_step / (time.time() - start_time)),
-        }, step=global_step)
+        }, step=global_step)'''
 
-        '''writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
-        writer.add_scalar("losses/policy_loss", final_policy_loss.item(), global_step)
+        writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)'''
+        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
     sns.set(style="whitegrid")
     plt.figure(figsize=(8, 5))
     smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
