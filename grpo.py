@@ -23,7 +23,7 @@ import tensorboard as tb
 class Args:
     num_groups: int = 8
     '''number of groups to generate'''
-    kl_coef: float = 0.01
+    kl_coef: float = 0.001
     '''coefficient of the kl divergence penalty'''
 
 
@@ -217,11 +217,12 @@ def train(G):
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+        cumulative_rewards = torch.zeros(args.num_groups).to(device)
         for step in range(0, args.num_steps):
             if finish_iteration.all():
                 break
 
-            global_step += args.num_groups
+            global_step += np.count_nonzero(finish_iteration==0)  # Count the number of environments that are not done
             obs[step] = next_obs
             dones[step] = next_done
             # ALGO LOGIC: action logic
@@ -234,17 +235,20 @@ def train(G):
 
             # TRY NOT TO MODIFY: execute the game and log data.
             #taking action in the environment
-            """next_obs gives you the state of taking the action
-            do we only take one action: meaning the state for all the groups is the same?
-            do we take n amounts of actions per group therefore having to create a loop for each group?
-                but then how do the rewards get calculated? Maybe its just the last reward or discounted sum of rewards """
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
             #print(terminations)
             #print(reward)
+            reward_tensor = torch.tensor(reward).to(device).view(-1)
+            rewards[step] = reward_tensor
+
+            mask = torch.tensor(~finish_iteration).to(device)
+            cumulative_rewards += reward_tensor * mask.float()
+
             next_done = np.logical_or(terminations, truncations)
             finish_iteration = np.logical_or(finish_iteration, next_done)
-            rewards[step] = torch.tensor(reward).to(device).view(-1)    #rewards are changed from np array into tensor form
+
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device) #rewards are changed from np array into tensor form
+
 
             if "final_info" in infos:   #if the episode is done (multiple parallel episodes)
                 for info in infos["final_info"]:
@@ -255,23 +259,11 @@ def train(G):
 
         """take a step in the environment and log data. maybe take n steps instead of 1
         this will be ri in advantages"""
-
         next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
         next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
 
         # bootstrap value if not done
         with torch.no_grad():
-            #next_value = agent.get_value(next_obs).reshape(1, -1)
-
-            cumulative_rewards = torch.zeros(args.num_groups).to(device)
-            active_mask = torch.ones(args.num_groups, dtype=torch.bool).to(device)  #multiply by 1 if not finished and by 0 if finished
-            #lastgaelam = 0
-            for t in range(args.num_steps):
-                cumulative_rewards += rewards[t] * active_mask
-
-                # If a reward is 0, stop accumulating for that group
-                active_mask &= (rewards[t] != 0)
-            #print(cumulative_rewards - torch.mean(cumulative_rewards))
             advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards), nan=0.0)
             #print(advantages)
         #print(cumulative_rewards)
@@ -308,7 +300,8 @@ def train(G):
                 mb_inds = b_inds_per_group[group]  # Use all indices at once
                 mb_obs = b_obs[group, mb_inds]
                 mb_actions = b_actions[group, mb_inds]
-                mb_old_logprobs = b_logprobs[group, mb_inds]
+                with torch.no_grad():
+                    mb_old_logprobs = b_logprobs[group, mb_inds]
                 mb_advantage = advantages[group]  # Use the single advantage per group
                 # Get new policy probabilities
                 _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
@@ -323,14 +316,15 @@ def train(G):
 
                 # KL Divergence penalty
 
-                """new_probs = new_logprobs.exp()
+                new_probs = new_logprobs.exp()
                 old_probs = mb_old_logprobs.exp()
                 prob_ratio = old_probs / new_probs
                 kl_elements = prob_ratio - torch.log(prob_ratio) - 1
-                kl_penalty = args.kl_coef * kl_elements.mean()"""
+                #print(kl_elements)
+                kl_penalty = kl_elements.mean()
 
-                kl = (mb_old_logprobs - new_logprobs).mean()
-                kl_penalty = args.kl_coef * kl
+                '''kl = (mb_old_logprobs - new_logprobs).mean()
+                kl_penalty = args.kl_coef * kl'''
 
                 # Entropy bonus
                 #entropy_bonus = args.ent_coef * entropy.mean()
@@ -342,8 +336,10 @@ def train(G):
 
             # Compute the mean loss over all groups
             #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
-            final_policy_loss = (total_policy_loss + total_kl_penalty) / args.num_groups
-            #print(final_policy_loss)
+            final_policy_loss = (total_policy_loss + args.kl_coef * total_kl_penalty) / args.num_groups
+            #print("########################################################################")
+            #print(total_policy_loss)
+            #print(args.kl_coef * total_kl_penalty)
 
             # Backpropagation
             optimizer.zero_grad()
@@ -351,35 +347,15 @@ def train(G):
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        '''wandb.log({
-            "charts/learning_rate": optimizer.param_groups[0]["lr"],
-            "charts/mean_reward": cumulative_rewards.mean().item(),
-            "charts/max_reward": cumulative_rewards.max().item(),
-            "losses/policy_loss": final_policy_loss.item(),
-            "charts/SPS": int(global_step / (time.time() - start_time)),
-        }, step=global_step)'''
-
+        # record rewards for plotting purposes
+        #print(global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-    sns.set(style="whitegrid")
-    plt.figure(figsize=(8, 5))
-    smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
-    sns.lineplot(x=np.arange(len(smoothed_mean_rewards)), y=smoothed_mean_rewards, label="max Reward", color="red")
 
-    plt.xlabel("Iteration")
-    plt.ylabel("Max Reward")
-    plt.title("Max Reward Over Iterations")
-    plt.legend()
-    #plt.savefig(f"plots/reward_over_iterations_GRPO_g{args.num_groups}_max.png")
-    #plt.show()
-    envs.close()
-    writer.close()
-    wandb.finish()
     return success
 
 if __name__ == "__main__":
