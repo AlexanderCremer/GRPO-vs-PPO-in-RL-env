@@ -14,6 +14,7 @@ from torch.distributions.categorical import Categorical
 from tensorboardX import SummaryWriter
 # Add this import at the top of your script
 import matplotlib.pyplot as plt
+import copy
 
 
 @dataclass
@@ -241,6 +242,7 @@ if __name__ == "__main__":
             #print(advantages)
             returns = advantages + values
 
+            #print("rewards", rewards)
             cumulative_rewards = torch.zeros(args.num_envs).to(device)
             active_mask = torch.ones(args.num_envs, dtype=torch.bool).to(device)  #multiply by 1 if not finished and by 0 if finished
             for t in range(args.num_steps):
@@ -249,7 +251,6 @@ if __name__ == "__main__":
                 # If a reward is 0, stop accumulating for that parallel env
                 active_mask &= (rewards[t] != 0)
         mean_reward[iteration-1] = torch.max(cumulative_rewards)
-
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
@@ -314,6 +315,39 @@ if __name__ == "__main__":
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
+        eval_env = gym.make(args.env_id)
+
+        # Evaluate using greedy actors
+        eval_rewards = []
+
+        # Deepcopy the agent so the evaluation doesn't interfere with training
+        eval_agent = copy.deepcopy(agent)
+        eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
+
+        for _ in range(10):  # Run 10 greedy evaluations
+            eval_obs, _ = eval_env.reset()
+            eval_obs = torch.tensor(eval_obs, dtype=torch.float32).to(device).unsqueeze(0)  # Add batch dim
+            eval_done = False
+            eval_total_reward = 0
+
+            while not eval_done:
+                with torch.no_grad():
+                    eval_logits = eval_agent.actor(eval_obs)
+                    eval_action = torch.argmax(eval_logits, dim=-1).item()
+
+                eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
+                eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
+                eval_total_reward += eval_reward
+                eval_done = eval_terminated or eval_truncated
+
+            eval_rewards.append(eval_total_reward)
+        eval_mean_reward = np.average(eval_rewards)
+        writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
+
+        # Optional: Close the eval environment after use
+        eval_env.close()
+
+
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -332,15 +366,6 @@ if __name__ == "__main__":
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-    plt.figure(figsize=(8, 5))
-    smoothed_mean_rewards = np.convolve(mean_reward, np.ones(10)/10, mode='valid')
-    plt.plot(np.arange(len(smoothed_mean_rewards)), smoothed_mean_rewards, label="Mean Reward")
-    plt.xlabel("Iteration")
-    plt.ylabel("Max Reward")
-    plt.title("Max Reward Over Iterations")
-    plt.legend()
-    plt.savefig("plots/reward_over_iterations_PPO_max.png")
-    plt.show()
 
     envs.close()
     writer.close()

@@ -1,5 +1,3 @@
-
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
 import os
 import random
 import time
@@ -14,6 +12,7 @@ import tyro
 from torch.distributions.categorical import Categorical
 from tensorboardX import SummaryWriter
 # Add this import at the top of your script
+import copy
 import matplotlib.pyplot as plt
 import seaborn as sns
 import tensorboard as tb
@@ -23,6 +22,7 @@ import tensorboard as tb
 class Args:
     num_groups: int = 8
     '''number of groups to generate'''
+    #best so far 0.001
     kl_coef: float = 0.001
     '''coefficient of the kl divergence penalty'''
 
@@ -47,10 +47,10 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 100000
+    total_timesteps: int = 250000
     """total timesteps of the experiments"""
     # best so far 2.5e-2
-    learning_rate: float = 2.5e-2
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -121,9 +121,6 @@ class Agent(nn.Module):
             layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
         )
 
-    #def get_value(self, x):
-        #return self.critic(x)
-
     def get_action(self, x, action=None):
         logits = self.actor(x)
         probs = Categorical(logits=logits)
@@ -138,10 +135,10 @@ def train(G):
     args = tyro.cli(Args)
     args.num_groups = G
     # args.batch_size = int(args.num_envs * args.num_steps)
-    args.total_timesteps = args.total_timesteps * args.num_groups
+    #args.total_timesteps = args.total_timesteps * args.num_groups
     args.batch_size = int(args.num_groups * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.batch_size
+    args.num_iterations = args.total_timesteps // args.num_steps
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
@@ -178,22 +175,10 @@ def train(G):
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
-    # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
-    actions = torch.zeros((args.num_steps, args.num_groups) + envs.single_action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_groups)).to(device)
-    logits = torch.zeros((args.num_steps, args.num_groups)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_groups)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_groups)).to(device)
-    #values = torch.zeros((args.num_steps, args.num_groups)).to(device)
-
-
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    # Environment setup
-    # Environment setup
     initial_obs, _ = envs.envs[0].reset(seed=args.seed)  # Get the initial state from the first environment
 
     # Sync the state across all environments by manually setting the state in each environment.
@@ -209,6 +194,15 @@ def train(G):
     mean_reward = np.zeros(args.num_iterations)
 
     for iteration in range(1, args.num_iterations + 1):
+        # Environment setup
+        obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
+        actions = torch.zeros((args.num_steps, args.num_groups) + envs.single_action_space.shape, dtype=torch.long).to(device)
+        logprobs = torch.zeros((args.num_steps, args.num_groups)).to(device)
+        logits = torch.zeros((args.num_steps, args.num_groups), dtype=torch.long).to(device)
+        rewards = torch.zeros((args.num_steps, args.num_groups), dtype=torch.float64).to(device)
+        dones = torch.zeros((args.num_steps, args.num_groups)).to(device)
+        group_steps = torch.ones(args.num_groups, dtype=torch.int32).to(device)
+
         finish_iteration = np.array([False] * args.num_groups)
 
         # Annealing the rate if instructed to do so.
@@ -221,34 +215,33 @@ def train(G):
         for step in range(0, args.num_steps):
             if finish_iteration.all():
                 break
+            global_step += np.count_nonzero(finish_iteration == 0)
 
-            global_step += np.count_nonzero(finish_iteration==0)  # Count the number of environments that are not done
-            obs[step] = next_obs
-            dones[step] = next_done
-            # ALGO LOGIC: action logic
+            obs[step][~finish_iteration] = next_obs[~finish_iteration]
+            dones[step][~finish_iteration] = next_done[~finish_iteration]
+
             with torch.no_grad():
-                action, logprob, _ = agent.get_action(next_obs) #select action
-                #values[step] = value.flatten()
-            actions[step] = action
-            logprobs[step] = logprob
-            logits[step] = action
+                action, logprob, _ = agent.get_action(next_obs)
 
-            # TRY NOT TO MODIFY: execute the game and log data.
-            #taking action in the environment
-            next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
-            #print(terminations)
-            #print(reward)
+            actions[step][~finish_iteration] = action[~finish_iteration]
+            logprobs[step][~finish_iteration] = logprob[~finish_iteration]
+            logits[step][~finish_iteration] = action[~finish_iteration]  # if logits really = action
+
+            next_obs_np, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+
             reward_tensor = torch.tensor(reward).to(device).view(-1)
-            rewards[step] = reward_tensor
+            rewards[step][~finish_iteration] = reward_tensor[~finish_iteration]
 
             mask = torch.tensor(~finish_iteration).to(device)
             cumulative_rewards += reward_tensor * mask.float()
 
-            next_done = np.logical_or(terminations, truncations)
-            finish_iteration = np.logical_or(finish_iteration, next_done)
+            next_done_np = np.logical_or(terminations, truncations)
+            finish_iteration = np.logical_or(finish_iteration, next_done_np)
 
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device) #rewards are changed from np array into tensor form
+            next_obs = torch.tensor(next_obs_np).to(device)
+            next_done = torch.tensor(next_done_np).float().to(device)
 
+            group_steps[~finish_iteration] += 1
 
             if "final_info" in infos:   #if the episode is done (multiple parallel episodes)
                 for info in infos["final_info"]:
@@ -259,6 +252,10 @@ def train(G):
 
         """take a step in the environment and log data. maybe take n steps instead of 1
         this will be ri in advantages"""
+        #print(rewards)
+        #print(logprobs)
+        #print(cumulative_rewards)
+        #print(group_steps)
         next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
         next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
 
@@ -275,18 +272,16 @@ def train(G):
         #returns = advantages + values
 
         # flatten the batch but keeping the group structure
-        b_obs = obs.reshape((args.num_groups, -1) + envs.single_observation_space.shape)
-        b_logprobs = logprobs.reshape(args.num_groups, -1)
-        b_actions = actions.reshape((args.num_groups, -1) + envs.single_action_space.shape)
-        #b_advantages = advantages.reshape(args.num_groups, -1)
-        #print(b_logprobs[4])
-        #b_returns = returns.reshape(-1)
-        #b_values = values.reshape(-1)
-
-        # Optimizing the policy network
-        #b_inds = np.arange(args.batch_size)
+        b_obs = []
+        b_actions = []
+        b_logprobs = []
+        for group in range(args.num_groups):
+            valid_steps = group_steps[group]  # how many valid steps for this group
+            b_obs.append(obs[:valid_steps, group])            # take only valid steps
+            b_actions.append(actions[:valid_steps, group])
+            b_logprobs.append(logprobs[:valid_steps, group])
         clipfracs = []
-        b_inds_per_group = [np.arange(args.batch_size // args.num_groups) for _ in range(args.num_groups)]
+        b_inds_per_group = [np.arange(group_steps[g]) for g in range(args.num_groups)]
         #print(b_inds_per_group)
 
         for epoch in range(args.update_epochs):
@@ -298,12 +293,18 @@ def train(G):
                 #np.random.shuffle(b_inds_per_group[group])
 
                 mb_inds = b_inds_per_group[group]  # Use all indices at once
-                mb_obs = b_obs[group, mb_inds]
-                mb_actions = b_actions[group, mb_inds]
+                mb_obs = b_obs[group]
+                mb_actions = b_actions[group]
+                #print(mb_actions.shape)
                 with torch.no_grad():
-                    mb_old_logprobs = b_logprobs[group, mb_inds]
+                    mb_old_logprobs = b_logprobs[group]
+                    #print(mb_old_logprobs)
+                    #print(b_logprobs)
+                    #print(mb_inds)
                 mb_advantage = advantages[group]  # Use the single advantage per group
                 # Get new policy probabilities
+                #print(mb_obs, mb_actions)
+                #print(mb_obs.shape, mb_actions.shape)
                 _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
                 log_ratio = new_logprobs - mb_old_logprobs
                 #print(mb_old_logprobs)
@@ -317,7 +318,10 @@ def train(G):
                 # KL Divergence penalty
 
                 new_probs = new_logprobs.exp()
+                #print(new_probs)
                 old_probs = mb_old_logprobs.exp()
+                #print("#####################")
+                #print(old_probs)
                 prob_ratio = old_probs / new_probs
                 kl_elements = prob_ratio - torch.log(prob_ratio) - 1
                 #print(kl_elements)
@@ -346,6 +350,43 @@ def train(G):
             final_policy_loss.backward()
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
+
+
+
+
+        eval_env = gym.make(args.env_id)
+
+        # Evaluate using greedy actors
+        eval_rewards = []
+
+        # Deepcopy the agent so the evaluation doesn't interfere with training
+        eval_agent = copy.deepcopy(agent)
+        eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
+
+        for _ in range(10):  # Run 10 greedy evaluations
+            eval_obs, _ = eval_env.reset()
+            eval_obs = torch.tensor(eval_obs, dtype=torch.float32).to(device).unsqueeze(0)  # Add batch dim
+            eval_done = False
+            eval_total_reward = 0
+
+            while not eval_done:
+                with torch.no_grad():
+                    eval_logits = eval_agent.actor(eval_obs)
+                    eval_action = torch.argmax(eval_logits, dim=-1).item()
+
+                eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
+                eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
+                eval_total_reward += eval_reward
+                eval_done = eval_terminated or eval_truncated
+
+            eval_rewards.append(eval_total_reward)
+        eval_mean_reward = np.average(eval_rewards)
+        writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
+
+        # Optional: Close the eval environment after use
+        eval_env.close()
+
+
 
         # record rewards for plotting purposes
         #print(global_step)
