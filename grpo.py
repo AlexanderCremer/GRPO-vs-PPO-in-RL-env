@@ -14,7 +14,7 @@ from tensorboardX import SummaryWriter
 # Add this import at the top of your script
 import copy
 import matplotlib.pyplot as plt
-import seaborn as sns
+#import seaborn as sns
 import tensorboard as tb
 
 
@@ -23,7 +23,7 @@ class Args:
     num_groups: int = 8
     '''number of groups to generate'''
     #best so far 0.001
-    kl_coef: float = 0.001
+    kl_coef: float = 0.01
     '''coefficient of the kl divergence penalty'''
 
 
@@ -192,7 +192,7 @@ def train(G):
     next_done = torch.zeros(args.num_groups).to(device)  # Initialize done flags for all groups
 
     mean_reward = np.zeros(args.num_iterations)
-
+    print(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
         # Environment setup
         obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
@@ -211,6 +211,7 @@ def train(G):
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+
         cumulative_rewards = torch.zeros(args.num_groups).to(device)
         for step in range(0, args.num_steps):
             if finish_iteration.all():
@@ -224,7 +225,7 @@ def train(G):
                 action, logprob, _ = agent.get_action(next_obs)
 
             actions[step][~finish_iteration] = action[~finish_iteration]
-            logprobs[step][~finish_iteration] = logprob[~finish_iteration]
+            logprobs[step][~finish_iteration] = logprob[~finish_iteration].detach()
             logits[step][~finish_iteration] = action[~finish_iteration]  # if logits really = action
 
             next_obs_np, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -323,7 +324,8 @@ def train(G):
                 #print("#####################")
                 #print(old_probs)
                 prob_ratio = old_probs / new_probs
-                kl_elements = prob_ratio - torch.log(prob_ratio) - 1
+                with torch.no_grad():
+                    kl_elements = prob_ratio - torch.log(prob_ratio) - 1
                 #print(kl_elements)
                 kl_penalty = kl_elements.mean()
 
@@ -387,6 +389,7 @@ def train(G):
         eval_env.close()
 
 
+        writer.add_scalar("charts/kl_divergence", total_kl_penalty.item(), global_step)
 
         # record rewards for plotting purposes
         #print(global_step)
@@ -401,5 +404,5 @@ def train(G):
 
 if __name__ == "__main__":
 
-    a = train(5)
+    a = train(10)
     print("Successes:", a)
