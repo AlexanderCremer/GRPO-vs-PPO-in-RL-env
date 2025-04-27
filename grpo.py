@@ -22,8 +22,8 @@ import tensorboard as tb
 class Args:
     num_groups: int = 8
     '''number of groups to generate'''
-    #best so far 0.001
-    kl_coef: float = 0.01
+    #best so far 0.1 (for G=10 at least)
+    kl_coef: float = 0.1
     '''coefficient of the kl divergence penalty'''
 
 
@@ -146,7 +146,7 @@ def train(G):
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
-            sync_tensorboard=True,
+            sync_tensorboard=True,     #
             config=vars(args),
             name=f"GRPO_G{args.num_groups}",
             monitor_gym=True,
@@ -192,7 +192,6 @@ def train(G):
     next_done = torch.zeros(args.num_groups).to(device)  # Initialize done flags for all groups
 
     mean_reward = np.zeros(args.num_iterations)
-    print(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
         # Environment setup
         obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
