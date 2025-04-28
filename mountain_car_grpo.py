@@ -35,7 +35,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "GRPO"
     """the wandb's project name"""
@@ -45,7 +45,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MountainCar-v0"
+    env_id: str = "Acrobot-v1"
     """the id of the environment"""
     total_timesteps: int = 250000
     """total timesteps of the experiments"""
@@ -54,7 +54,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 200
+    num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -148,7 +148,7 @@ def train(G):
             entity=args.wandb_entity,
             sync_tensorboard=True,     #
             config=vars(args),
-            name=f"GRPO_G{args.num_groups}",
+            name=f"GRPO_G{args.num_groups}_{args.env_id}",
             monitor_gym=True,
             save_code=True,
         )
@@ -265,7 +265,7 @@ def train(G):
             #print(advantages)
         #print(cumulative_rewards)
         mean_reward[iteration-1] = torch.max(cumulative_rewards)
-        if any(r >= 200 for r in cumulative_rewards):
+        if any(r >= -100 for r in cumulative_rewards):
             success += 1
 
         #print(advantages)
@@ -355,37 +355,35 @@ def train(G):
 
 
 
-        eval_env = gym.make(args.env_id)
+        # Evaluate the agent
+        agent.eval()  # Set agent to eval mode (disable dropout, etc.)
 
-        # Evaluate using greedy actors
+        eval_env = gym.make(args.env_id)  # Create a fresh evaluation environment
         eval_rewards = []
-
-        # Deepcopy the agent so the evaluation doesn't interfere with training
-        eval_agent = copy.deepcopy(agent)
-        eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
 
         for _ in range(10):  # Run 10 greedy evaluations
             eval_obs, _ = eval_env.reset()
-            eval_obs = torch.tensor(eval_obs, dtype=torch.float32).to(device).unsqueeze(0)  # Add batch dim
+            eval_obs = torch.tensor(eval_obs, dtype=torch.float32, device=device).unsqueeze(0)  # Add batch dimension
             eval_done = False
-            eval_total_reward = 0
+            eval_total_reward = 0.0
 
             while not eval_done:
                 with torch.no_grad():
-                    eval_logits = eval_agent.actor(eval_obs)
+                    eval_logits = agent.actor(eval_obs)
                     eval_action = torch.argmax(eval_logits, dim=-1).item()
 
                 eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
-                eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
+                eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32, device=device).unsqueeze(0)
                 eval_total_reward += eval_reward
                 eval_done = eval_terminated or eval_truncated
 
             eval_rewards.append(eval_total_reward)
-        eval_mean_reward = np.average(eval_rewards)
+
+        eval_mean_reward = np.mean(eval_rewards)
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
-        # Optional: Close the eval environment after use
-        eval_env.close()
+        eval_env.close()  # Close after use
+        agent.train()  # Set agent back to training mode
 
 
         writer.add_scalar("charts/kl_divergence", total_kl_penalty.item(), global_step)
