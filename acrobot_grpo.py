@@ -23,7 +23,7 @@ class Args:
     num_groups: int = 8
     '''number of groups to generate'''
     #best so far 0.1 (for G=10 at least)
-    kl_coef: float = 0.1
+    kl_coef: float = 0.2
     '''coefficient of the kl divergence penalty'''
 
 
@@ -40,6 +40,7 @@ class Args:
     wandb_project_name: str = "GRPO"
     """the wandb's project name"""
     wandb_entity: str = None
+
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
@@ -47,10 +48,10 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "Acrobot-v1"
     """the id of the environment"""
-    total_timesteps: int = 250000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    # best so far 2.5e-2
-    learning_rate: float = 2.5e-4
+    # best so far 2.5e-4 and 2.5e-5
+    learning_rate: float = 2.5e-5
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
