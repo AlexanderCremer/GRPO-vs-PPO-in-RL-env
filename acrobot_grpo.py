@@ -144,6 +144,9 @@ def train(G):
     if args.track:
         import wandb
 
+        if wandb.run is not None:
+            wandb.finish()
+
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
@@ -381,6 +384,9 @@ def train(G):
             eval_rewards.append(eval_total_reward)
 
         eval_mean_reward = np.mean(eval_rewards)
+        '''if eval_mean_reward >= -100:
+            elapsed = time.time()-start_time
+            print(f"Took {elapsed:.2f} seconds")'''
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
         eval_env.close()  # Close after use
@@ -395,12 +401,16 @@ def train(G):
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
+        #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     return success
 
 if __name__ == "__main__":
-
-    a = train(10)
+    for i in range(3, 11):
+        a = train(i)
+        print(f"{i} done")
     print("Successes:", a)
+"""
+Best so far(most interesting to plot): G=2,4,10
+"""

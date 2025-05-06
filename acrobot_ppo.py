@@ -27,7 +27,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "PPO"
     """the wandb's project name"""
@@ -348,6 +348,9 @@ if __name__ == "__main__":
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
+        if eval_mean_reward >= -100:
+            elapsed = time.time()-start_time
+            print(f"Took {elapsed:.2f} seconds")
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
         # Optional: Close the eval environment after use
@@ -369,7 +372,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
+        #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
 

@@ -45,9 +45,9 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MountainCar-v0"
+    env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 250000
+    total_timesteps: int = 200000
     """total timesteps of the experiments"""
     # best so far 2.5e-2
     learning_rate: float = 2.5e-4
@@ -143,12 +143,15 @@ def train(G):
     if args.track:
         import wandb
 
+        if wandb.run is not None:
+            wandb.finish()
+
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,     #
             config=vars(args),
-            name=f"GRPO_G{args.num_groups}",
+            name=f"GRPO_G{args.num_groups}_{args.env_id}",
             monitor_gym=True,
             save_code=True,
         )
@@ -396,12 +399,12 @@ def train(G):
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
+        #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     return success
 
 if __name__ == "__main__":
-
-    a = train(10)
+    for i in range(3, 11):
+        a = train(i)
     print("Successes:", a)
