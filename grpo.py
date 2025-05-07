@@ -22,8 +22,8 @@ import tensorboard as tb
 class Args:
     num_groups: int = 8
     '''number of groups to generate'''
-    #best so far 0.1 (for G=10 at least)
-    kl_coef: float = 0.1
+    #best so far 0.2 (for G=10 at least)
+    kl_coef: float = 0.2
     '''coefficient of the kl divergence penalty'''
 
 
@@ -49,8 +49,8 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 200000
     """total timesteps of the experiments"""
-    # best so far 2.5e-2
-    learning_rate: float = 2.5e-4
+    # best so far 1e-2
+    learning_rate: float = 2e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -405,6 +405,6 @@ def train(G):
     return success
 
 if __name__ == "__main__":
-    for i in range(3, 11):
-        a = train(i)
+    #for i in [2,4]:
+    a = train(4)
     print("Successes:", a)
