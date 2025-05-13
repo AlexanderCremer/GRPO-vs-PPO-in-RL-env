@@ -129,7 +129,7 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy()
 
 
-def train(G):
+def train(G, seed=1):
     success = 0
 
     args = tyro.cli(Args)
@@ -140,6 +140,8 @@ def train(G):
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.num_steps
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+
+    args.seed = seed
     if args.track:
         import wandb
 
