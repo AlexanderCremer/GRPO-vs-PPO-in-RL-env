@@ -141,6 +141,9 @@ def train(seed=1):
     if args.track:
         import wandb
 
+        if wandb.run is not None:
+            wandb.finish()
+
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
@@ -350,9 +353,9 @@ def train(seed=1):
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
-        if eval_mean_reward >= -100:
+        '''if eval_mean_reward >= -100:
             elapsed = time.time()-start_time
-            print(f"Took {elapsed:.2f} seconds")
+            print(f"Took {elapsed:.2f} seconds")'''
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
         # Optional: Close the eval environment after use

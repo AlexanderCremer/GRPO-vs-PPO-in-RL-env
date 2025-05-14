@@ -141,6 +141,9 @@ def train(seed=1):
     if args.track:
         import wandb
 
+        if wandb.run is not None:
+            wandb.finish()
+
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,

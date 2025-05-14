@@ -4,7 +4,7 @@ import acrobot_ppo
 import acrobot_grpo
 
 
-modules = [grpo, ppo, acrobot_ppo, acrobot_grpo]
+modules = [ppo, acrobot_ppo]
 
 # Loop through each module and call its train function
 for module in modules:
@@ -15,5 +15,5 @@ for module in modules:
                 module.train(group_size, seed=episode)
     else:
         for episode in range(1,11):
-            print(f"Episode {episode}: Running train({group_size}) from {module.__name__}")
+            print(f"Episode {episode}: Running train() from {module.__name__}")
             module.train(seed=episode)
