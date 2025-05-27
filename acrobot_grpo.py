@@ -51,7 +51,7 @@ class Args:
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
     # best so far 2.5e-4 and 2.5e-5
-    learning_rate: float = 1e-4
+    learning_rate: float = 2e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""

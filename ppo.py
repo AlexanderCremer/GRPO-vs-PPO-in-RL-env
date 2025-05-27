@@ -44,7 +44,7 @@ class Args:
     learning_rate: float = 2.5e-4
 
     """the learning rate of the optimizer"""
-    num_envs: int = 5
+    num_envs: int = 10
     """the number of parallel game environments"""
     num_steps: int = 200
     """the number of steps to run in each environment per policy rollout"""
@@ -134,7 +134,7 @@ def train(seed=1):
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.batch_size
+    args.num_iterations = 1000
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
     args.seed = seed
