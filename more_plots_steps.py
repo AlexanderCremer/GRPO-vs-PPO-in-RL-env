@@ -31,16 +31,23 @@ def export_and_update_runs(
             rows = []
             for row in run.scan_history():
                 if y_metric_key in row and "global_step" in row:
-                    rows.append({
-                        "global_step": row["global_step"],
-                        y_metric_key_csv: row[y_metric_key]  # Save with friendly column name
-                    })
+                    reward_val = row[y_metric_key]
+                    # Skip rows where reward_val is None, empty or NaN
+                    if reward_val is not None and reward_val != '' and not pd.isna(reward_val):
+                        rows.append({
+                            "global_step": row["global_step"],
+                            y_metric_key_csv: reward_val  # Save with friendly column name
+                        })
 
             if not rows:
                 print(f"No usable data found for run {run.name}")
                 continue
 
             df = pd.DataFrame(rows)
+            # Additional cleaning: convert reward column to numeric and drop NaNs (just to be safe)
+            df[y_metric_key_csv] = pd.to_numeric(df[y_metric_key_csv], errors='coerce')
+            df = df.dropna(subset=[y_metric_key_csv])
+
             out_path = os.path.join(output_dir, f"{run.id}_{run.name}_global_step.csv")
             df.to_csv(out_path, index=False)
             csv_paths[run.id] = out_path
@@ -97,6 +104,10 @@ def export_and_update_runs(
         )
 
         df = pd.read_csv(csv_path)
+        # Drop rows where reward is missing or NaN before logging
+        df[y_metric_key_csv] = pd.to_numeric(df[y_metric_key_csv], errors='coerce')
+        df = df.dropna(subset=[y_metric_key_csv])
+
         for _, row in df.iterrows():
             wandb.log({
                 "total steps": int(row["global_step"]),
@@ -110,7 +121,7 @@ def export_and_update_runs(
 export_and_update_runs(
     entity="akcremer11a",
     project_source="GRPO",
-    group="CartPole_G2",
+    group="Cartpole_G4",
     project_final="Final",
     y_metric_key="reward/mean_reward",
     y_metric_key_csv="on-policy cumulative reward",
