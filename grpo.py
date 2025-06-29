@@ -13,16 +13,12 @@ from torch.distributions.categorical import Categorical
 from tensorboardX import SummaryWriter
 # Add this import at the top of your script
 import copy
-import matplotlib.pyplot as plt
-#import seaborn as sns
-import tensorboard as tb
 
 
 @dataclass
 class Args:
     num_groups: int = 8
     '''number of groups to generate'''
-    #best so far 0.2 (for G=10 at least)
     kl_coef: float = 0.2
     '''coefficient of the kl divergence penalty'''
 
@@ -70,12 +66,6 @@ class Args:
     """Toggles advantages normalization"""
     clip_coef: float = 0.2
     """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
-    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
-    """coefficient of the entropy"""
-    vf_coef: float = 0.5
-    """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
@@ -134,8 +124,6 @@ def train(G, seed=1):
 
     args = tyro.cli(Args)
     args.num_groups = G
-    # args.batch_size = int(args.num_envs * args.num_steps)
-    #args.total_timesteps = args.total_timesteps * args.num_groups
     args.batch_size = int(args.num_groups * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.num_steps
@@ -255,26 +243,15 @@ def train(G, seed=1):
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
-        """take a step in the environment and log data. maybe take n steps instead of 1
-        this will be ri in advantages"""
-        #print(rewards)
-        #print(logprobs)
-        #print(cumulative_rewards)
-        #print(group_steps)
         next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
         next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
 
         # bootstrap value if not done
         with torch.no_grad():
             advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards), nan=0.0)
-            #print(advantages)
-        #print(cumulative_rewards)
         mean_reward[iteration-1] = torch.max(cumulative_rewards)
         if any(r >= 200 for r in cumulative_rewards):
             success += 1
-
-        #print(advantages)
-        #returns = advantages + values
 
         # flatten the batch but keeping the group structure
         b_obs = []
@@ -285,34 +262,19 @@ def train(G, seed=1):
             b_obs.append(obs[:valid_steps, group])            # take only valid steps
             b_actions.append(actions[:valid_steps, group])
             b_logprobs.append(logprobs[:valid_steps, group])
-        clipfracs = []
-        b_inds_per_group = [np.arange(group_steps[g]) for g in range(args.num_groups)]
-        #print(b_inds_per_group)
 
         for epoch in range(args.update_epochs):
             total_policy_loss = 0
             total_kl_penalty = 0
-            total_entropy_bonus = 0
 
             for group in range(args.num_groups):
-                #np.random.shuffle(b_inds_per_group[group])
-
-                mb_inds = b_inds_per_group[group]  # Use all indices at once
                 mb_obs = b_obs[group]
                 mb_actions = b_actions[group]
-                #print(mb_actions.shape)
                 with torch.no_grad():
                     mb_old_logprobs = b_logprobs[group]
-                    #print(mb_old_logprobs)
-                    #print(b_logprobs)
-                    #print(mb_inds)
                 mb_advantage = advantages[group]  # Use the single advantage per group
-                # Get new policy probabilities
-                #print(mb_obs, mb_actions)
-                #print(mb_obs.shape, mb_actions.shape)
                 _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
                 log_ratio = new_logprobs - mb_old_logprobs
-                #print(mb_old_logprobs)
                 ratio = log_ratio.exp()
 
                 # Policy loss with clipping
@@ -321,35 +283,22 @@ def train(G, seed=1):
                 policy_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # KL Divergence penalty
-
                 new_probs = new_logprobs.exp()
-                #print(new_probs)
                 old_probs = mb_old_logprobs.exp()
-                #print("#####################")
-                #print(old_probs)
                 prob_ratio = old_probs / new_probs
                 with torch.no_grad():
                     kl_elements = prob_ratio - torch.log(prob_ratio) - 1
                 #print(kl_elements)
                 kl_penalty = kl_elements.mean()
 
-                '''kl = (mb_old_logprobs - new_logprobs).mean()
-                kl_penalty = args.kl_coef * kl'''
-
                 # Entropy bonus
-                #entropy_bonus = args.ent_coef * entropy.mean()
 
                 # Accumulate losses across groups
                 total_policy_loss += policy_loss
                 total_kl_penalty += kl_penalty
-                #total_entropy_bonus += entropy_bonus
 
             # Compute the mean loss over all groups
-            #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
             final_policy_loss = (total_policy_loss + args.kl_coef * total_kl_penalty) / args.num_groups
-            #print("########################################################################")
-            #print(total_policy_loss)
-            #print(args.kl_coef * total_kl_penalty)
 
             # Backpropagation
             optimizer.zero_grad()
@@ -367,7 +316,7 @@ def train(G, seed=1):
 
         # Deepcopy the agent so the evaluation doesn't interfere with training
         eval_agent = copy.deepcopy(agent)
-        eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
+        eval_agent.eval()
 
         for _ in range(10):  # Run 10 greedy evaluations
             eval_obs, _ = eval_env.reset()
@@ -396,12 +345,10 @@ def train(G, seed=1):
         writer.add_scalar("charts/kl_divergence", total_kl_penalty.item(), global_step)
 
         # record rewards for plotting purposes
-        #print(global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
-        #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     return success

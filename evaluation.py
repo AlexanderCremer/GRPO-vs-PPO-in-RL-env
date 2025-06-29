@@ -49,29 +49,23 @@ def analyze_final_runs(
             print(f"Failed to process run {run.name}: {e}")
 
     if not run_means:
-        print("❌ No valid data across all runs.")
+        print("No valid data across all runs.")
         return
 
     overall_mean = np.mean(run_means)
 
-    # Compute the mean of stds over time across runs:
-    # 1. Find minimum length
+    # Compute the mean of stds over time across runs
     min_length = min(len(lst) for lst in last_val)
     if min_length == 0:
         print("One of the runs has no last 5% data.")
         return
 
-    # 2. Truncate all to this length
     truncated = [lst.iloc[:min_length].values for lst in last_val]
-    # Shape: (num_runs, min_length)
     data_matrix = np.stack(truncated)
-    #assert data_matrix.shape[1] == min_length
-    # 3. Compute std at each timestep (over runs)
-    #np.set_printoptions(threshold=sys.maxsize)
-    #print(data_matrix)
+
     stds_over_time = np.std(data_matrix, axis=0)
 
-    # 4. Mean of those stds
+
     overall_std = np.mean(stds_over_time)
 
     print("\n Final Aggregated Statistics (over last 5% of each run):")
@@ -79,10 +73,10 @@ def analyze_final_runs(
     print(f"Mean of stds over time: {overall_std:.2f}")
 
 
-# Run it
+# Run
 analyze_final_runs(
     entity="akcremer11a",
     project="Final",
-    group="CartPole_PPO",
-    y_metric_key="on-policy cumulative reward"
+    group="aAcrobot_G2",
+    y_metric_key="greedy cumulative rewards"
 )

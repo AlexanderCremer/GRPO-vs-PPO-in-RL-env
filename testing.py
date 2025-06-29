@@ -4,7 +4,7 @@ import acrobot_ppo
 import acrobot_grpo
 
 
-modules = [acrobot_ppo, ppo]
+modules = [acrobot_grpo]
 
 # Loop through each module and call its train function
 for module in modules:

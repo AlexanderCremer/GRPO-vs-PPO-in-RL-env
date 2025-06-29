@@ -15,7 +15,7 @@ def export_and_update_runs(
     os.makedirs(output_dir, exist_ok=True)
     api = Api()
 
-    # Get source runs filtered by group
+    #Get source runs filtered by group
     source_runs = api.runs(f"{entity}/{project_source}", filters={"group": group})
     if not source_runs:
         print(f"No runs found in project '{project_source}' with group '{group}'")
@@ -23,7 +23,7 @@ def export_and_update_runs(
 
     csv_paths = {}
 
-    # Step 1: Export CSVs using global_step as x-axis
+    #Export CSVs using global_step as x-axis
     for run in source_runs:
         try:
             print(f"\nProcessing run: {run.name} ({run.id})")
@@ -44,7 +44,7 @@ def export_and_update_runs(
                 continue
 
             df = pd.DataFrame(rows)
-            # Additional cleaning: convert reward column to numeric and drop NaNs (just to be safe)
+            #convert reward column to numeric and drop NaNs (just to be safe)
             df[y_metric_key_csv] = pd.to_numeric(df[y_metric_key_csv], errors='coerce')
             df = df.dropna(subset=[y_metric_key_csv])
 
@@ -57,10 +57,10 @@ def export_and_update_runs(
             print(f"Failed to process run {run.name}: {e}")
 
     if not csv_paths:
-        print("❌ No valid CSVs were created. Exiting.")
+        print("No valid CSVs were created. Exiting.")
         return
 
-    # Step 2: Find the smallest max global_step across runs for truncation
+    #Find the smallest max global_step across runs for truncation
     min_last_step = None
     for path in csv_paths.values():
         df = pd.read_csv(path)
@@ -70,14 +70,14 @@ def export_and_update_runs(
 
     print(f"\nLowest last global_step across all runs: {min_last_step}")
 
-    # Step 3: Truncate all CSVs by min_last_step
+    #Truncate all CSVs by min_last_step
     for path in csv_paths.values():
         df = pd.read_csv(path)
         df_truncated = df[df["global_step"] <= min_last_step]
         df_truncated.to_csv(path, index=False)
         print(f"Truncated and saved: {path}")
 
-    # Step 4: Update final runs
+    #Update final runs
     final_runs = {run.name: run for run in api.runs(f"{entity}/{project_final}")}
 
     for source_run in source_runs:
@@ -104,7 +104,7 @@ def export_and_update_runs(
         )
 
         df = pd.read_csv(csv_path)
-        # Drop rows where reward is missing or NaN before logging
+        #Drop rows where reward is missing or NaN before logging
         df[y_metric_key_csv] = pd.to_numeric(df[y_metric_key_csv], errors='coerce')
         df = df.dropna(subset=[y_metric_key_csv])
 
@@ -115,7 +115,7 @@ def export_and_update_runs(
             })
 
         run.finish()
-        print(f"✅ Updated run '{run_name}'")
+        print(f"Updated run '{run_name}'")
 
 # Example usage:
 export_and_update_runs(

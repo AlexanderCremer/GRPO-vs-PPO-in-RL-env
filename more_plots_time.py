@@ -15,7 +15,7 @@ def export_and_update_runs_relative_time(
     os.makedirs(output_dir, exist_ok=True)
     api = Api()
 
-    # Get source runs filtered by group
+    #Get source runs filtered by group
     source_runs = api.runs(f"{entity}/{project_source}", filters={"group": group})
     if not source_runs:
         print(f"No runs found in project '{project_source}' with group '{group}'")
@@ -23,7 +23,7 @@ def export_and_update_runs_relative_time(
 
     csv_paths = {}
 
-    # Step 1: Export CSVs using relative time as x-axis
+    #Export CSVs using relative time as x-axis
     for run in source_runs:
         try:
             print(f"\nProcessing run: {run.name} ({run.id})")
@@ -34,7 +34,7 @@ def export_and_update_runs_relative_time(
             for row in run.scan_history():
                 if y_metric_key_source in row and "_timestamp" in row:
                     reward_val = row[y_metric_key_source]
-                    # Drop entries where reward_val is None, NaN, or empty string
+                    #Drop entries where reward_val is None, NaN, or empty string
                     if reward_val is not None and reward_val != '' and not pd.isna(reward_val):
                         if start_time is None:
                             start_time = row["_timestamp"]
@@ -57,10 +57,10 @@ def export_and_update_runs_relative_time(
             print(f"Failed to process run {run.name}: {e}")
 
     if not csv_paths:
-        print("❌ No valid CSVs were created. Exiting.")
+        print("No valid CSVs were created. Exiting.")
         return
 
-    # Step 2: Find smallest max time across runs for truncation
+    #Find smallest max time across runs for truncation
     min_last_time = None
     for path in csv_paths.values():
         df = pd.read_csv(path)
@@ -73,7 +73,7 @@ def export_and_update_runs_relative_time(
 
     print(f"\nLowest last time across all runs: {min_last_time:.2f} seconds")
 
-    # Step 3: Truncate all CSVs by min_last_time
+    #Truncate all CSVs by min_last_time
     for path in csv_paths.values():
         df = pd.read_csv(path)
         df = df.dropna(subset=[y_metric_key_csv])
@@ -82,7 +82,7 @@ def export_and_update_runs_relative_time(
         df_truncated.to_csv(path, index=False)
         print(f"Truncated and saved: {path}")
 
-    # Step 4: Update or create final runs
+    #Update or create final runs
     final_runs = {run.name: run for run in api.runs(f"{entity}/{project_final}")}
 
     for source_run in source_runs:
@@ -113,7 +113,7 @@ def export_and_update_runs_relative_time(
             )
 
         df = pd.read_csv(csv_path)
-        # Drop rows with missing or empty reward before logging
+        #Drop rows with missing or empty reward before logging
         df = df.dropna(subset=[y_metric_key_csv])
         df = df[df[y_metric_key_csv] != '']
 
@@ -124,7 +124,7 @@ def export_and_update_runs_relative_time(
             })
 
         run.finish()
-        print(f"✅ Finished run '{run_name}'")
+        print(f"Finished run '{run_name}'")
 
 
 export_and_update_runs_relative_time(
