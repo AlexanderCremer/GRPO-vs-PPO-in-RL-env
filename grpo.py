@@ -35,7 +35,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "GRPO"
     """the wandb's project name"""
@@ -180,21 +180,20 @@ def train(G, seed=1):
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
+    #create singleton environment
+    singleton_env = gym.make(args.env_id)
+    singleton_obs, _ = singleton_env.reset(seed=args.seed)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    initial_obs, _ = envs.envs[0].reset(seed=args.seed)  # Get the initial state from the first environment
+    initial_obs = []
 
-    # Sync the state across all environments by manually setting the state in each environment.
-    for i in range(1, args.num_groups):
-        # Manually reset the environment to match the first environment's initial state
-        envs.envs[i].reset(seed=args.seed)
-
-    # Replicate the initial state across all groups
-    next_obs = np.stack([initial_obs] * args.num_groups)  # Replicate the initial state across all groups
-    next_obs = torch.Tensor(next_obs).to(device)  # Convert to tensor for use
-    next_done = torch.zeros(args.num_groups).to(device)  # Initialize done flags for all groups
+    for i in range(args.num_groups):
+        obs, _ = envs.envs[i].reset(seed=args.seed)
+        initial_obs.append(obs)
+    next_obs = torch.tensor(initial_obs, dtype=torch.float32).to(device)
+    next_done = torch.zeros(args.num_groups).to(device)
 
     mean_reward = np.zeros(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
@@ -217,11 +216,14 @@ def train(G, seed=1):
             optimizer.param_groups[0]["lr"] = lrnow
 
         cumulative_rewards = torch.zeros(args.num_groups).to(device)
+        '''print(next_obs)
+        for env in envs.envs:
+            print(env.unwrapped.state)'''
+        starting_state = next_obs[0]
         for step in range(0, args.num_steps):
             if finish_iteration.all():
                 break
             global_step += np.count_nonzero(finish_iteration == 0)
-
             obs[step][~finish_iteration] = next_obs[~finish_iteration]
             dones[step][~finish_iteration] = next_done[~finish_iteration]
 
@@ -248,6 +250,9 @@ def train(G, seed=1):
 
             group_steps[~finish_iteration] += 1
 
+            #print("reward", reward, "finish", terminations)
+            #print(cumulative_rewards)
+
             if "final_info" in infos:   #if the episode is done (multiple parallel episodes)
                 for info in infos["final_info"]:
                     if info and "episode" in info:
@@ -261,8 +266,9 @@ def train(G, seed=1):
         #print(logprobs)
         #print(cumulative_rewards)
         #print(group_steps)
-        next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
-        next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
+
+        #next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
+        #next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -357,11 +363,26 @@ def train(G, seed=1):
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
 
+        # Take a step in the singleton environment
+        with torch.no_grad():
+            action, _, _ = agent.get_action(starting_state.unsqueeze(0))  # Add batch dim
+
+        obs, _, _, _, _ = singleton_env.step(action.cpu().numpy()[0])
+        state_to_copy = copy.deepcopy(singleton_env.unwrapped.state)
+
+        # Fully reset vector env and override state
+        envs.reset()
+        obs_list = []
+        for i in range(args.num_groups):
+            envs.envs[i].unwrapped.state = copy.deepcopy(state_to_copy)
+            obs_list.append(np.array(envs.envs[i].unwrapped.state, dtype=np.float32))
+
+        next_obs = torch.tensor(obs_list).to(device)
 
 
+        print("done", )
 
         eval_env = gym.make(args.env_id)
-
         # Evaluate using greedy actors
         eval_rewards = []
 
