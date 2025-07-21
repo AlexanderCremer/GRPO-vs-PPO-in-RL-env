@@ -195,9 +195,6 @@ def train(seed=1):
 
 
     for iteration in range(1, args.num_iterations + 1):
-        '''next_obs, _ = envs.reset(seed=args.seed + iteration)  # slight seed change to avoid identical resets
-        next_obs = torch.Tensor(next_obs).to(device)
-        next_done = torch.zeros(args.num_envs).to(device)'''
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             #more iterations, less learning rate
@@ -244,13 +241,8 @@ def train(seed=1):
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                #print("delta", delta, "rewards", rewards[t], "nextvalues", nextvalues, "nextnonterminal", nextnonterminal, "values", values[t])
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-                #print(rewards)
-            #print(advantages)
             returns = advantages + values
-
-            #print("rewards", rewards)
             cumulative_rewards = torch.zeros(args.num_envs).to(device)
             active_mask = torch.ones(args.num_envs, dtype=torch.bool).to(device)  #multiply by 1 if not finished and by 0 if finished
             for t in range(args.num_steps):
@@ -258,10 +250,6 @@ def train(seed=1):
 
                 # If a reward is 0, stop accumulating for that parallel env
                 active_mask &= (rewards[t] != 0)
-                #print(active_mask)
-        #mean_reward[iteration-1] = torch.max(cumulative_rewards)
-        #print(rewards)
-        #print(cumulative_rewards)
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
@@ -278,12 +266,9 @@ def train(seed=1):
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
-                #print(b_obs[mb_inds].shape)
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
-                #print(newlogprob)
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
-                #print(ratio)
                 with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
@@ -315,9 +300,7 @@ def train(seed=1):
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                #print(v_loss)
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
-                #print(loss)
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -333,7 +316,7 @@ def train(seed=1):
 
         # Deepcopy the agent so the evaluation doesn't interfere with training
         eval_agent = copy.deepcopy(agent)
-        eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
+        eval_agent.eval() 
 
         for _ in range(10):  # Run 10 greedy evaluations
             eval_obs, _ = eval_env.reset()
@@ -353,9 +336,6 @@ def train(seed=1):
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
-        '''if eval_mean_reward >= -100:
-            elapsed = time.time()-start_time
-            print(f"Took {elapsed:.2f} seconds")'''
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
         # Optional: Close the eval environment after use
@@ -377,7 +357,6 @@ def train(seed=1):
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
-        #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
 

@@ -272,12 +272,9 @@ def train(seed=1):
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
-                #print(b_obs[mb_inds].shape)
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
-                #print(newlogprob)
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
-                #print(ratio)
                 with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
@@ -291,7 +288,7 @@ def train(seed=1):
                 # Policy loss
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean() 
 
                 # Value loss
                 newvalue = newvalue.view(-1)
@@ -309,9 +306,7 @@ def train(seed=1):
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                #print(v_loss)
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
-                #print(loss)
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -327,7 +322,7 @@ def train(seed=1):
 
         # Deepcopy the agent so the evaluation doesn't interfere with training
         eval_agent = copy.deepcopy(agent)
-        eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
+        eval_agent.eval()
 
         for _ in range(10):  # Run 10 greedy evaluations
             eval_obs, _ = eval_env.reset()
@@ -368,7 +363,6 @@ def train(seed=1):
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
         writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
-        #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
 
