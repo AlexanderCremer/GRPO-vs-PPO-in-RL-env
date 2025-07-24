@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import gymnasium as gym
 import numpy as np
+from numpy import cos, sin, pi
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -35,7 +36,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "GRPO"
     """the wandb's project name"""
@@ -47,14 +48,14 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 200000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
     # best so far 1e-2
-    learning_rate: float = 2e-4
+    learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 200
+    num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -129,11 +130,12 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy()
 
 
-def train(G, seed=1):
+def train(G, seed=1, env="CartPole-v1"):
     success = 0
 
     args = tyro.cli(Args)
     args.num_groups = G
+    args.env_id = env
     # args.batch_size = int(args.num_envs * args.num_steps)
     #args.total_timesteps = args.total_timesteps * args.num_groups
     args.batch_size = int(args.num_groups * args.num_steps)
@@ -250,9 +252,6 @@ def train(G, seed=1):
 
             group_steps[~finish_iteration] += 1
 
-            #print("reward", reward, "finish", terminations)
-            #print(cumulative_rewards)
-
             if "final_info" in infos:   #if the episode is done (multiple parallel episodes)
                 for info in infos["final_info"]:
                     if info and "episode" in info:
@@ -266,6 +265,8 @@ def train(G, seed=1):
         #print(logprobs)
         #print(cumulative_rewards)
         #print(group_steps)
+        print(global_step)
+        print(cumulative_rewards.mean())
 
         #next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
         #next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
@@ -367,28 +368,33 @@ def train(G, seed=1):
         with torch.no_grad():
             action, _, _ = agent.get_action(starting_state.unsqueeze(0))  # Add batch dim
 
-        obs, _, _, _, _ = singleton_env.step(action.cpu().numpy()[0])
+        obs, _, s_termination, s_truncation, _ = singleton_env.step(action.cpu().numpy()[0])
         state_to_copy = copy.deepcopy(singleton_env.unwrapped.state)
+        # reset singleton env if terminated o rtruncated
+        if s_termination or s_truncation:
+            singleton_env.reset()
 
         # Fully reset vector env and override state
         envs.reset()
         obs_list = []
         for i in range(args.num_groups):
             envs.envs[i].unwrapped.state = copy.deepcopy(state_to_copy)
-            obs_list.append(np.array(envs.envs[i].unwrapped.state, dtype=np.float32))
+            #obs_list.append(np.array(envs.envs[i].unwrapped.state, dtype=np.float32))
+            obs_i, _ = envs.envs[i].reset()
+            obs_list.append(obs_i)
 
-        next_obs = torch.tensor(obs_list).to(device)
+        next_obs = torch.tensor(np.array(obs_list)).to(device)
 
 
-        print("done", )
-
+        #print("done", )
+        agent.eval()
         eval_env = gym.make(args.env_id)
         # Evaluate using greedy actors
         eval_rewards = []
 
         # Deepcopy the agent so the evaluation doesn't interfere with training
-        eval_agent = copy.deepcopy(agent)
-        eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
+        #eval_agent = copy.deepcopy(agent)
+        #eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
 
         for _ in range(10):  # Run 10 greedy evaluations
             eval_obs, _ = eval_env.reset()
@@ -398,8 +404,9 @@ def train(G, seed=1):
 
             while not eval_done:
                 with torch.no_grad():
-                    eval_logits = eval_agent.actor(eval_obs)
+                    eval_logits = agent.actor(eval_obs)
                     eval_action = torch.argmax(eval_logits, dim=-1).item()
+                    #eval_action, _, _ = agent.get_action(eval_obs)
 
                 eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
@@ -429,5 +436,5 @@ def train(G, seed=1):
 
 if __name__ == "__main__":
     #for i in [2,4]:
-    a = train(4)
+    a = train(10, seed=1, env="Acrobot-v1")
     print("Successes:", a)
