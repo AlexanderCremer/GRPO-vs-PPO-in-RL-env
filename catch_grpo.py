@@ -8,6 +8,8 @@ import numpy as np
 from bsuite.utils.gym_wrapper import GymFromDMEnv
 import bsuite
 from gymnasium import spaces
+from gymnasium.spaces import Discrete
+
 
 import torch
 import torch.nn as nn
@@ -152,7 +154,54 @@ def make_env(env_id, capture_video, run_name):
     return thunk
 
 
+class VectorizedBsuiteEnv:
+    def __init__(self, env_id: str, num_envs: int):
+        self.envs = []
+        self.num_envs = num_envs
 
+        if env_id.startswith("bsuite/"):
+            bsuite_name = env_id.split("/")[1]
+            base_name = bsuite_name.split("-")[0]
+            version_index = int(bsuite_name.split("-")[1].replace("v", ""))
+
+            for i in range(num_envs):
+                dm_env = bsuite.load_from_id(f"{base_name}/{version_index}")
+                gym_env = GymFromDMEnv(dm_env)
+                self.envs.append(gym_env)
+        else:
+            raise ValueError("This wrapper only supports bsuite environments.")
+
+        self.single_action_space = self.envs[0].action_space
+        self.single_observation_space = self.envs[0].observation_space
+
+    def reset(self):
+        obs = [env.reset() for env in self.envs]
+        return np.stack(obs)
+
+    def step(self, actions):
+        obs, rewards, dones, infos = [], [], [], []
+
+        for env, action in zip(self.envs, actions):
+            o, r, done, info = env.step(action)
+            obs.append(o)
+            rewards.append(r)
+            dones.append(done)
+            infos.append(info)
+
+        return (
+            np.stack(obs),
+            np.array(rewards),
+            np.array(dones),
+            infos,
+        )
+
+    def render(self):
+        for env in self.envs:
+            env.render()
+
+    def close(self):
+        for env in self.envs:
+            env.close()
 
 
 
@@ -226,16 +275,16 @@ def train(G, seed=1, env="CartPole-v1"):
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.capture_video, run_name) for i in range(args.num_groups)],
-    )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    envs = VectorizedBsuiteEnv(args.env_id, args.num_groups)
+    #print(envs.single_action_space)
+    #print(Discrete)
+    #assert isinstance(envs.single_action_space, Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     #create singleton environment
-    singleton_env = make_env(args.env_id, False, run_name)()
+    singleton_env = VectorizedBsuiteEnv(args.env_id, 1)
     singleton_obs = singleton_env.reset()
 
     # TRY NOT TO MODIFY: start the game
@@ -248,7 +297,6 @@ def train(G, seed=1, env="CartPole-v1"):
         initial_obs.append(obs)
     next_obs = torch.tensor(initial_obs, dtype=torch.float32).to(device)
     next_done = torch.zeros(args.num_groups).to(device)
-
     mean_reward = np.zeros(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
         # Environment setup
@@ -270,9 +318,9 @@ def train(G, seed=1, env="CartPole-v1"):
             optimizer.param_groups[0]["lr"] = lrnow
 
         cumulative_rewards = torch.zeros(args.num_groups).to(device)
-        print(next_obs)
-        for env in envs.envs:
-            print(env.unwrapped._board)
+        #print(next_obs)
+        #for env in envs.envs:
+        print(envs.envs[0]._env._board)
         starting_state = next_obs[0]
         for step in range(0, args.num_steps):
             if finish_iteration.all():
@@ -282,25 +330,24 @@ def train(G, seed=1, env="CartPole-v1"):
             dones[step][~finish_iteration] = next_done[~finish_iteration]
 
             with torch.no_grad():
+                next_obs = next_obs.reshape(next_obs.shape[0], -1)
                 action, logprob, _ = agent.get_action(next_obs)
-
             actions[step][~finish_iteration] = action[~finish_iteration]
             logprobs[step][~finish_iteration] = logprob[~finish_iteration].detach()
             logits[step][~finish_iteration] = action[~finish_iteration]  # if logits really = action
 
-            next_obs_np, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
-
+            next_obs_np, reward, done, infos = envs.step(action.cpu().numpy())
             reward_tensor = torch.tensor(reward).to(device).view(-1)
             rewards[step][~finish_iteration] = reward_tensor[~finish_iteration]
 
             mask = torch.tensor(~finish_iteration).to(device)
             cumulative_rewards += reward_tensor * mask.float()
 
-            next_done_np = np.logical_or(terminations, truncations)
-            finish_iteration = np.logical_or(finish_iteration, next_done_np)
+            #next_done_np = np.logical_or(terminations, truncations)
+            finish_iteration = np.logical_or(finish_iteration, done)
 
             next_obs = torch.tensor(next_obs_np).to(device)
-            next_done = torch.tensor(next_done_np).float().to(device)
+            next_done = torch.tensor(done).float().to(device)
 
             group_steps[~finish_iteration] += 1
 
@@ -369,6 +416,7 @@ def train(G, seed=1, env="CartPole-v1"):
                 # Get new policy probabilities
                 #print(mb_obs, mb_actions)
                 #print(mb_obs.shape, mb_actions.shape)
+                mb_obs = mb_obs.reshape(mb_obs.shape[0], -1).to(device)
                 _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
                 log_ratio = new_logprobs - mb_old_logprobs
                 #print(mb_old_logprobs)
@@ -418,19 +466,19 @@ def train(G, seed=1, env="CartPole-v1"):
 
         # Take a step in the singleton environment
         with torch.no_grad():
-            action, _, _ = agent.get_action(starting_state.unsqueeze(0))  # Add batch dim
-
-        obs, _, s_termination, s_truncation, _ = singleton_env.step(action.cpu().numpy()[0])
-        state_to_copy = copy.deepcopy(singleton_env.unwrapped._board)
+            starting_state = torch.flatten(starting_state).to(device)
+            action, _, _ = agent.get_action(starting_state)  # Add batch dim
+        obs, _, done, _ = singleton_env.step([action.cpu().numpy()])
+        state_to_copy = copy.deepcopy(singleton_env.envs[0]._env._board)
         # reset singleton env if terminated o rtruncated
-        if s_termination or s_truncation:
+        if done:
             singleton_env.reset()
 
         # Fully reset vector env and override state
         envs.reset()
         obs_list = []
         for i in range(args.num_groups):
-            envs.envs[i].unwrapped._board = copy.deepcopy(state_to_copy)
+            envs.envs[i]._env._board = copy.deepcopy(state_to_copy)
             #obs_list.append(np.array(envs.envs[i].unwrapped.state, dtype=np.float32))
             obs_i = envs.envs[i].reset()
             obs_list.append(obs_i)
@@ -440,7 +488,7 @@ def train(G, seed=1, env="CartPole-v1"):
 
         #print("done", )
         agent.eval()
-        eval_env = gym.make(args.env_id)
+        eval_env = VectorizedBsuiteEnv(args.env_id, 1)
         # Evaluate using greedy actors
         eval_rewards = []
 
@@ -456,14 +504,15 @@ def train(G, seed=1, env="CartPole-v1"):
 
             while not eval_done:
                 with torch.no_grad():
+                    eval_obs = torch.flatten(eval_obs).to(device)
                     eval_logits = agent.actor(eval_obs)
                     eval_action = torch.argmax(eval_logits, dim=-1).item()
                     #eval_action, _, _ = agent.get_action(eval_obs)
 
-                eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
+                eval_next_obs, eval_reward, done, _ = eval_env.step([eval_action])
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
                 eval_total_reward += eval_reward
-                eval_done = eval_terminated or eval_truncated
+                eval_done = done
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
