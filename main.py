@@ -1,8 +1,6 @@
 import grpo
-import ppo
 import acrobot_ppo
-import acrobot_grpo
-
+from trash import acrobot_grpo
 
 modules = [acrobot_grpo]
 

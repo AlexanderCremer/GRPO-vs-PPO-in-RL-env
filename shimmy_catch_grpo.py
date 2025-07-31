@@ -5,12 +5,9 @@ from dataclasses import dataclass
 
 import gymnasium as gym
 import numpy as np
-from bsuite.utils.gym_wrapper import GymFromDMEnv
 import bsuite
-from gymnasium import spaces
-from gymnasium.spaces import Discrete
-
-
+import shimmy
+from numpy import cos, sin, pi
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -103,106 +100,11 @@ def make_env(env_id, capture_video, run_name):
             base_name = bsuite_name.split("-")[0]
             version_index = int(bsuite_name.split("-")[1].replace("v", ""))
             dm_env = bsuite.load_from_id(f"{base_name}/{version_index}")
-            gym_env = GymFromDMEnv(dm_env)
-
-            # Convert dm_env specs to gym spaces
-            action_spec = dm_env.action_spec()
-            obs_spec = dm_env.observation_spec()
-
-            # Handle discrete actions (Catch has discrete actions)
-            gym_action_space = spaces.Discrete(action_spec.num_values)
-
-            # Handle float32 observation vector
-            obs_shape = obs_spec.shape
-            gym_observation_space = spaces.Box(
-                low=-np.inf,
-                high=np.inf,
-                shape=obs_shape,
-                dtype=np.float32
-            )
-
-            # Custom wrapper that explicitly defines action/observation_space
-            class FullyGymCompatibleEnv(gym.Env):
-                def __init__(self, wrapped_env):
-                    self._env = wrapped_env
-                    self.action_space = gym_action_space
-                    self.observation_space = gym_observation_space
-
-                def reset(self, **kwargs):
-                    return self._env.reset(**kwargs)
-
-                def step(self, action):
-                    return self._env.step(action)
-
-                def render(self, mode="human"):
-                    return self._env.render(mode)
-
-                def close(self):
-                    return self._env.close()
-
-                def __getattr__(self, name):
-                    return getattr(self._env, name)
-
-            return FullyGymCompatibleEnv(gym_env)
-
-        else:
-            env = gym.make(env_id)
-            if capture_video:
-                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-            return env
+            gym_env = shimmy.bsuite_compatibility.BSuiteCompatibilityV0(dm_env)
+            gym_env = gym.wrappers.RecordEpisodeStatistics(gym_env)
+        return gym_env
 
     return thunk
-
-
-class VectorizedBsuiteEnv:
-    def __init__(self, env_id: str, num_envs: int):
-        self.envs = []
-        self.num_envs = num_envs
-
-        if env_id.startswith("bsuite/"):
-            bsuite_name = env_id.split("/")[1]
-            base_name = bsuite_name.split("-")[0]
-            version_index = int(bsuite_name.split("-")[1].replace("v", ""))
-
-            for i in range(num_envs):
-                dm_env = bsuite.load_from_id(f"{base_name}/{version_index}")
-                gym_env = GymFromDMEnv(dm_env)
-                self.envs.append(gym_env)
-        else:
-            raise ValueError("This wrapper only supports bsuite environments.")
-
-        self.single_action_space = self.envs[0].action_space
-        self.single_observation_space = self.envs[0].observation_space
-
-    def reset(self):
-        obs = [env.reset() for env in self.envs]
-        return np.stack(obs)
-
-    def step(self, actions):
-        obs, rewards, dones, infos = [], [], [], []
-
-        for env, action in zip(self.envs, actions):
-            o, r, done, info = env.step(action)
-            obs.append(o)
-            rewards.append(r)
-            dones.append(done)
-            infos.append(info)
-
-        return (
-            np.stack(obs),
-            np.array(rewards),
-            np.array(dones),
-            infos,
-        )
-
-    def render(self):
-        for env in self.envs:
-            env.render()
-
-    def close(self):
-        for env in self.envs:
-            env.close()
-
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -275,17 +177,17 @@ def train(G, seed=1, env="CartPole-v1"):
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = VectorizedBsuiteEnv(args.env_id, args.num_groups)
-    #print(envs.single_action_space)
-    #print(Discrete)
-    #assert isinstance(envs.single_action_space, Discrete), "only discrete action space is supported"
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.capture_video, run_name) for i in range(args.num_groups)],
+    )
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     #create singleton environment
-    singleton_env = VectorizedBsuiteEnv(args.env_id, 1)
-    singleton_obs = singleton_env.reset()
+    singleton_env = gym.make(args.env_id)
+    singleton_obs, _ = singleton_env.reset(seed=args.seed)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -293,10 +195,11 @@ def train(G, seed=1, env="CartPole-v1"):
     initial_obs = []
 
     for i in range(args.num_groups):
-        obs = envs.envs[i].reset()
+        obs, _ = envs.envs[i].reset(seed=args.seed)
         initial_obs.append(obs)
     next_obs = torch.tensor(initial_obs, dtype=torch.float32).to(device)
     next_done = torch.zeros(args.num_groups).to(device)
+
     mean_reward = np.zeros(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
         # Environment setup
@@ -318,9 +221,9 @@ def train(G, seed=1, env="CartPole-v1"):
             optimizer.param_groups[0]["lr"] = lrnow
 
         cumulative_rewards = torch.zeros(args.num_groups).to(device)
-        #print(next_obs)
-        #for env in envs.envs:
-        print(envs.envs[0]._env._board)
+        '''print(next_obs)
+        for env in envs.envs:
+            print(env.unwrapped._env._board)'''
         starting_state = next_obs[0]
         for step in range(0, args.num_steps):
             if finish_iteration.all():
@@ -332,22 +235,24 @@ def train(G, seed=1, env="CartPole-v1"):
             with torch.no_grad():
                 next_obs = next_obs.reshape(next_obs.shape[0], -1)
                 action, logprob, _ = agent.get_action(next_obs)
+
             actions[step][~finish_iteration] = action[~finish_iteration]
             logprobs[step][~finish_iteration] = logprob[~finish_iteration].detach()
             logits[step][~finish_iteration] = action[~finish_iteration]  # if logits really = action
 
-            next_obs_np, reward, done, infos = envs.step(action.cpu().numpy())
+            next_obs_np, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+
             reward_tensor = torch.tensor(reward).to(device).view(-1)
             rewards[step][~finish_iteration] = reward_tensor[~finish_iteration]
 
             mask = torch.tensor(~finish_iteration).to(device)
             cumulative_rewards += reward_tensor * mask.float()
 
-            #next_done_np = np.logical_or(terminations, truncations)
-            finish_iteration = np.logical_or(finish_iteration, done)
+            next_done_np = np.logical_or(terminations, truncations)
+            finish_iteration = np.logical_or(finish_iteration, next_done_np)
 
             next_obs = torch.tensor(next_obs_np).to(device)
-            next_done = torch.tensor(done).float().to(device)
+            next_done = torch.tensor(next_done_np).float().to(device)
 
             group_steps[~finish_iteration] += 1
 
@@ -364,9 +269,7 @@ def train(G, seed=1, env="CartPole-v1"):
         #print(logprobs)
         #print(cumulative_rewards)
         #print(group_steps)
-        print(global_step)
-        print(cumulative_rewards.mean())
-
+        #print(cumulative_rewards.mean())
         #next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
         #next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
 
@@ -467,20 +370,22 @@ def train(G, seed=1, env="CartPole-v1"):
         # Take a step in the singleton environment
         with torch.no_grad():
             starting_state = torch.flatten(starting_state).to(device)
-            action, _, _ = agent.get_action(starting_state)  # Add batch dim
-        obs, _, done, _ = singleton_env.step([action.cpu().numpy()])
-        state_to_copy = copy.deepcopy(singleton_env.envs[0]._env._board)
+            action, _, _ = agent.get_action(starting_state.unsqueeze(0))  # Add batch dim
+
+        obs, _, s_termination, s_truncation, _ = singleton_env.step(action.cpu().numpy()[0])
+        state_to_copy = copy.deepcopy(singleton_env.unwrapped._env._board)
         # reset singleton env if terminated o rtruncated
-        if done:
+        if s_termination or s_truncation:
             singleton_env.reset()
 
         # Fully reset vector env and override state
         envs.reset()
         obs_list = []
         for i in range(args.num_groups):
-            envs.envs[i]._env._board = copy.deepcopy(state_to_copy)
             #obs_list.append(np.array(envs.envs[i].unwrapped.state, dtype=np.float32))
-            obs_i = envs.envs[i].reset()
+            _, _ = envs.envs[i].reset()
+            envs.envs[i].unwrapped._env._board = copy.deepcopy(state_to_copy)
+            obs_i = envs.envs[i].unwrapped._env._board
             obs_list.append(obs_i)
 
         next_obs = torch.tensor(np.array(obs_list)).to(device)
@@ -488,7 +393,7 @@ def train(G, seed=1, env="CartPole-v1"):
 
         #print("done", )
         agent.eval()
-        eval_env = VectorizedBsuiteEnv(args.env_id, 1)
+        eval_env = gym.make(args.env_id)
         # Evaluate using greedy actors
         eval_rewards = []
 
@@ -497,7 +402,7 @@ def train(G, seed=1, env="CartPole-v1"):
         #eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
 
         for _ in range(10):  # Run 10 greedy evaluations
-            eval_obs = eval_env.reset()
+            eval_obs, _ = eval_env.reset()
             eval_obs = torch.tensor(eval_obs, dtype=torch.float32).to(device).unsqueeze(0)  # Add batch dim
             eval_done = False
             eval_total_reward = 0
@@ -509,10 +414,10 @@ def train(G, seed=1, env="CartPole-v1"):
                     eval_action = torch.argmax(eval_logits, dim=-1).item()
                     #eval_action, _, _ = agent.get_action(eval_obs)
 
-                eval_next_obs, eval_reward, done, _ = eval_env.step([eval_action])
+                eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
                 eval_total_reward += eval_reward
-                eval_done = done
+                eval_done = eval_terminated or eval_truncated
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
