@@ -36,7 +36,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "GRPO"
     """the wandb's project name"""
@@ -196,7 +196,7 @@ def train(G, seed=1, env="CartPole-v1"):
         initial_obs.append(obs)
     next_obs = torch.tensor(initial_obs, dtype=torch.float32).to(device)
     next_done = torch.zeros(args.num_groups).to(device)
-
+    #print(next_obs, next_obs.shape)
     mean_reward = np.zeros(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
         # Environment setup
@@ -218,9 +218,9 @@ def train(G, seed=1, env="CartPole-v1"):
             optimizer.param_groups[0]["lr"] = lrnow
 
         cumulative_rewards = torch.zeros(args.num_groups).to(device)
-        print(next_obs)
+        '''print(next_obs)
         for env in envs.envs:
-            print(env.unwrapped.state)
+            print(env.unwrapped.state)'''
         starting_state = next_obs[0]
         for step in range(0, args.num_steps):
             if finish_iteration.all():

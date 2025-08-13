@@ -94,7 +94,6 @@ class Args:
 
 def make_env(env_id, capture_video, run_name):
     def thunk():
-        minatar_gym.register_envs()
         if capture_video:
             env = gym.make(env_id, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
@@ -176,6 +175,7 @@ def train(G, seed=1, env="CartPole-v1"):
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
+    minatar_gym.register_envs()
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.capture_video, run_name) for i in range(args.num_groups)],
     )
@@ -196,13 +196,13 @@ def train(G, seed=1, env="CartPole-v1"):
     for i in range(args.num_groups):
         obs, _ = envs.envs[i].reset(seed=args.seed)
         initial_obs.append(obs)
+    #print(obs)
     next_obs = torch.tensor(initial_obs, dtype=torch.float32).to(device)
     next_done = torch.zeros(args.num_groups).to(device)
-
     mean_reward = np.zeros(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
         # Environment setup
-        obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
+        obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape, dtype=torch.float32).to(device)
         actions = torch.zeros((args.num_steps, args.num_groups) + envs.single_action_space.shape, dtype=torch.long).to(device)
         logprobs = torch.zeros((args.num_steps, args.num_groups)).to(device)
         logits = torch.zeros((args.num_steps, args.num_groups), dtype=torch.long).to(device)
@@ -228,6 +228,7 @@ def train(G, seed=1, env="CartPole-v1"):
             if finish_iteration.all():
                 break
             global_step += np.count_nonzero(finish_iteration == 0)
+            #print(next_obs)
             obs[step][~finish_iteration] = next_obs[~finish_iteration]
             dones[step][~finish_iteration] = next_done[~finish_iteration]
 
@@ -249,8 +250,8 @@ def train(G, seed=1, env="CartPole-v1"):
 
             next_done_np = np.logical_or(terminations, truncations)
             finish_iteration = np.logical_or(finish_iteration, next_done_np)
-
-            next_obs = torch.tensor(next_obs_np).to(device)
+            next_obs = torch.tensor(next_obs_np, dtype=torch.float32).to(device)
+            #print(next_obs_np)
             next_done = torch.tensor(next_done_np).float().to(device)
 
             group_steps[~finish_iteration] += 1
@@ -264,6 +265,7 @@ def train(G, seed=1, env="CartPole-v1"):
 
         """take a step in the environment and log data. maybe take n steps instead of 1
         this will be ri in advantages"""
+        #torch.set_printoptions(precision=4, sci_mode=False, linewidth=200, profile="full")
         #print(rewards)
         #print(logprobs)
         #print(cumulative_rewards)
@@ -371,26 +373,44 @@ def train(G, seed=1, env="CartPole-v1"):
             starting_state = torch.flatten(starting_state).to(device)
             action, _, _ = agent.get_action(starting_state.unsqueeze(0))  # Add batch dim
 
-        obs, _, s_termination, s_truncation, _ = singleton_env.step(action.cpu().numpy()[0])
-        state_to_copy = copy.deepcopy(singleton_env.unwrapped._env._board)
-        # reset singleton env if terminated o rtruncated
-        if s_termination or s_truncation:
-            singleton_env.reset()
+        # Step singleton environment
+        _, _, s_term, s_trunc, _ = singleton_env.step(action)
 
-        # Fully reset vector env and override state
-        envs.reset()
-        obs_list = []
-        for i in range(args.num_groups):
-            #obs_list.append(np.array(envs.envs[i].unwrapped.state, dtype=np.float32))
-            _, _ = envs.envs[i].reset()
-            envs.envs[i].unwrapped._env._board = copy.deepcopy(state_to_copy)
-            obs_i = envs.envs[i].unwrapped._env._board
-            obs_list.append(obs_i)
+        # Copy internal variables
+        state_to_copy = {
+            "ball_x": singleton_env.unwrapped.game.env.ball_x,
+            "ball_y": singleton_env.unwrapped.game.env.ball_y,
+            "pos": singleton_env.unwrapped.game.env.pos,
+            "brick_map": copy.deepcopy(singleton_env.unwrapped.game.env.brick_map),
+            "last_x": singleton_env.unwrapped.game.env.last_x,
+            "last_y": singleton_env.unwrapped.game.env.last_y,
+            "ball_dir": singleton_env.unwrapped.game.env.ball_dir,
+            "strike": singleton_env.unwrapped.game.env.strike,
+            "terminal": singleton_env.unwrapped.game.env.terminal,
+        }
 
-        next_obs = torch.tensor(np.array(obs_list)).to(device)
+        # Reset vector environments
+        for env in envs.envs:
+            env.reset()
+            # Manually set internal variables
+            env.unwrapped.game.env.ball_x = state_to_copy["ball_x"]
+            env.unwrapped.game.env.ball_y = state_to_copy["ball_y"]
+            env.unwrapped.game.env.pos = state_to_copy["pos"]
+            env.unwrapped.game.env.brick_map = copy.deepcopy(state_to_copy["brick_map"])
+            env.unwrapped.game.env.last_x = state_to_copy["last_x"]
+            env.unwrapped.game.env.last_y = state_to_copy["last_y"]
+            env.unwrapped.game.env.ball_dir = state_to_copy["ball_dir"]
+            env.unwrapped.game.env.strike = state_to_copy["strike"]
+            env.unwrapped.game.env.terminal = state_to_copy["terminal"]
+
+        # Now you can get the numeric states for all groups
+        obs_list = [env.unwrapped.game.state() for env in envs.envs]
+        print(obs_list)
+        next_obs = torch.tensor(np.stack(obs_list, axis=0), dtype=torch.float32).to(device)
 
 
-        #print("done", )
+
+        #print("done")
         agent.eval()
         eval_env = gym.make(args.env_id)
         # Evaluate using greedy actors
@@ -417,9 +437,11 @@ def train(G, seed=1, env="CartPole-v1"):
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
                 eval_total_reward += eval_reward
                 eval_done = eval_terminated or eval_truncated
+                #print(eval_done)
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
+        print(f"Mean greedy evaluation reward: {eval_mean_reward}")
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
         # Optional: Close the eval environment after use
@@ -441,5 +463,5 @@ def train(G, seed=1, env="CartPole-v1"):
 
 if __name__ == "__main__":
     #for i in [2,4]:
-    a = train(10, seed=1, env="MinAtar/Asterix-v1")
+    a = train(10, seed=1, env="MinAtar/Breakout-v1")
     print("Successes:", a)
