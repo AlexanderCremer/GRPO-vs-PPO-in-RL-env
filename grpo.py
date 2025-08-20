@@ -38,7 +38,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "GRPO"
+    wandb_project_name: str = "Paper_GRPO_gymnasium"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -155,7 +155,7 @@ def train(G, seed=1, env="CartPole-v1"):
             entity=args.wandb_entity,
             sync_tensorboard=True,     #
             config=vars(args),
-            name=f"GRPO_G{args.num_groups}_{args.env_id}",
+            name=f"{env}GRPO_G{args.num_groups}_{args.env_id}",
             monitor_gym=True,
             save_code=True,
         )
@@ -198,6 +198,7 @@ def train(G, seed=1, env="CartPole-v1"):
     next_done = torch.zeros(args.num_groups).to(device)
     #print(next_obs, next_obs.shape)
     mean_reward = np.zeros(args.num_iterations)
+    print(args.num_iterations)
     for iteration in range(1, args.num_iterations + 1):
         # Environment setup
         obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
@@ -265,8 +266,8 @@ def train(G, seed=1, env="CartPole-v1"):
         #print(logprobs)
         #print(cumulative_rewards)
         #print(group_steps)
-        print(global_step)
-        print(cumulative_rewards.mean())
+        #print(global_step)
+        #print(cumulative_rewards.mean())
 
         #next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
         #next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
@@ -404,9 +405,9 @@ def train(G, seed=1, env="CartPole-v1"):
 
             while not eval_done:
                 with torch.no_grad():
-                    eval_logits = agent.actor(eval_obs)
-                    eval_action = torch.argmax(eval_logits, dim=-1).item()
-                    #eval_action, _, _ = agent.get_action(eval_obs)
+                    #eval_logits = agent.actor(eval_obs)
+                    #eval_action = torch.argmax(eval_logits, dim=-1).item()
+                    eval_action, _, _ = agent.get_action(eval_obs)
 
                 eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
@@ -415,7 +416,7 @@ def train(G, seed=1, env="CartPole-v1"):
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
-        writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
+        #writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
         # Optional: Close the eval environment after use
         eval_env.close()
@@ -426,8 +427,9 @@ def train(G, seed=1, env="CartPole-v1"):
         # record rewards for plotting purposes
         #print(global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
-        writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
+        writer.add_scalar("reward/mean_reward_vs_steps", eval_mean_reward, global_step)
+        writer.add_scalar("reward/mean_reward_vs_time", eval_mean_reward, time.time() - start_time)
+        #writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
         #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)

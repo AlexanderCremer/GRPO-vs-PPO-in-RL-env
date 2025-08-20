@@ -25,7 +25,7 @@ class Args:
     num_groups: int = 8
     '''number of groups to generate'''
     #best so far 0.2 (for G=10 at least)
-    kl_coef: float = 0.2
+    kl_coef: float = 0.01
     '''coefficient of the kl divergence penalty'''
 
 
@@ -49,9 +49,8 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
-    # best so far 1e-2
     learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
     num_envs: int = 4
@@ -220,6 +219,8 @@ def train(G, seed=1, env="CartPole-v1"):
             optimizer.param_groups[0]["lr"] = lrnow
 
         cumulative_rewards = torch.zeros(args.num_groups).to(device)
+        #torch.set_printoptions(precision=4, sci_mode=False, linewidth=200, profile="full")
+        #print(next_obs)
         '''print(next_obs)
         for env in envs.envs:
             print(env.unwrapped._env._board)'''
@@ -253,7 +254,6 @@ def train(G, seed=1, env="CartPole-v1"):
             next_obs = torch.tensor(next_obs_np, dtype=torch.float32).to(device)
             #print(next_obs_np)
             next_done = torch.tensor(next_done_np).float().to(device)
-
             group_steps[~finish_iteration] += 1
 
             if "final_info" in infos:   #if the episode is done (multiple parallel episodes)
@@ -273,10 +273,10 @@ def train(G, seed=1, env="CartPole-v1"):
         #print(cumulative_rewards.mean())
         #next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
         #next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
-
+        #print(cumulative_rewards)
         # bootstrap value if not done
         with torch.no_grad():
-            advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards), nan=0.0)
+            advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards)+1e-8, nan=0.0)
             #print(advantages)
         #print(cumulative_rewards)
         mean_reward[iteration-1] = torch.max(cumulative_rewards)
@@ -352,8 +352,13 @@ def train(G, seed=1, env="CartPole-v1"):
 
                 # Accumulate losses across groups
                 total_policy_loss += policy_loss
-                total_kl_penalty += kl_penalty
+                #total_kl_penalty += kl_penalty
                 #total_entropy_bonus += entropy_bonus
+
+                total_kl_penalty += kl_penalty
+
+            # You would still do your optimizer step after accumulating over groups
+
 
             # Compute the mean loss over all groups
             #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
@@ -368,14 +373,15 @@ def train(G, seed=1, env="CartPole-v1"):
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
 
-        # Take a step in the singleton environment
+         # Take a step in the singleton environment
         with torch.no_grad():
-            starting_state = torch.flatten(starting_state).to(device)
+            starting_state = torch.tensor(singleton_obs, dtype=torch.float32, device=device).flatten().unsqueeze(0)
             action, _, _ = agent.get_action(starting_state.unsqueeze(0))  # Add batch dim
 
         # Step singleton environment
-        _, _, s_term, s_trunc, _ = singleton_env.step(action)
-
+        singleton_obs, _, s_term, s_trunc, _ = singleton_env.step(action)
+        if s_term or s_trunc:
+            singleton_obs, _ = singleton_env.reset()
         # Copy internal variables
         state_to_copy = {
             "ball_x": singleton_env.unwrapped.game.env.ball_x,
@@ -401,11 +407,12 @@ def train(G, seed=1, env="CartPole-v1"):
             env.unwrapped.game.env.last_y = state_to_copy["last_y"]
             env.unwrapped.game.env.ball_dir = state_to_copy["ball_dir"]
             env.unwrapped.game.env.strike = state_to_copy["strike"]
-            env.unwrapped.game.env.terminal = state_to_copy["terminal"]
+            #env.unwrapped.game.env.terminal = state_to_copy["terminal"]
+            env.unwrapped.game.env.terminal = False
 
         # Now you can get the numeric states for all groups
         obs_list = [env.unwrapped.game.state() for env in envs.envs]
-        print(obs_list)
+        #print(obs_list)
         next_obs = torch.tensor(np.stack(obs_list, axis=0), dtype=torch.float32).to(device)
 
 
@@ -429,21 +436,24 @@ def train(G, seed=1, env="CartPole-v1"):
             while not eval_done:
                 with torch.no_grad():
                     eval_obs = torch.flatten(eval_obs).to(device)
-                    eval_logits = agent.actor(eval_obs)
-                    eval_action = torch.argmax(eval_logits, dim=-1).item()
-                    #eval_action, _, _ = agent.get_action(eval_obs)
+                    #eval_logits = agent.actor(eval_obs)
+                    #eval_action = torch.argmax(eval_logits, dim=-1).item()
+                    eval_action, _, _ = agent.get_action(eval_obs)
 
                 eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
                 eval_total_reward += eval_reward
                 eval_done = eval_terminated or eval_truncated
-                #print(eval_done)
-
+                #print(eval_next_obs)
+                '''if iteration >500:
+                    eval_env.unwrapped.game.display_state(50)
+                    time.sleep(0.05)'''
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
         print(f"Mean greedy evaluation reward: {eval_mean_reward}")
+        #print(cumulative_rewards.mean().item())
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
-
+        #print(cumulative_rewards)
         # Optional: Close the eval environment after use
         eval_env.close()
 
@@ -458,7 +468,6 @@ def train(G, seed=1, env="CartPole-v1"):
         writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
         #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-
     return success
 
 if __name__ == "__main__":

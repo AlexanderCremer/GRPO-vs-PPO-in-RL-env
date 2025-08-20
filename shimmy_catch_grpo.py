@@ -421,6 +421,7 @@ def train(G, seed=1, env="CartPole-v1"):
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
+        print(f"Iteration {iteration}, Mean Greedy Evaluation Reward: {eval_mean_reward:.2f}")
         writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
 
         # Optional: Close the eval environment after use
