@@ -36,9 +36,9 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "Paper_GRPO_gymnasium"
+    wandb_project_name: str = "GRPO_gymnasium"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -136,36 +136,40 @@ def train(G, seed=1, env="CartPole-v1"):
     args = tyro.cli(Args)
     args.num_groups = G
     args.env_id = env
-    # args.batch_size = int(args.num_envs * args.num_steps)
-    #args.total_timesteps = args.total_timesteps * args.num_groups
+
+    # Optional: shorter run for Acrobot
+    if env == "Acrobot-v1":
+        args.total_timesteps = 200_000
+
+    # These no longer depend on "iterations"
     args.batch_size = int(args.num_groups * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.num_steps
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    # args.num_iterations is unused with a while-loop; keep if you want, but it's not needed.
 
+    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     args.seed = seed
+
     if args.track:
         import wandb
-
         if wandb.run is not None:
             wandb.finish()
-
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
-            sync_tensorboard=True,     #
+            sync_tensorboard=True,
             config=vars(args),
             name=f"{env}GRPO_G{args.num_groups}_{args.env_id}",
             monitor_gym=True,
             save_code=True,
         )
+
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
+    # Seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -173,268 +177,210 @@ def train(G, seed=1, env="CartPole-v1"):
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    # env setup
+    # Vector envs
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.capture_video, run_name) for i in range(args.num_groups)],
+        [make_env(args.env_id, args.capture_video, run_name) for _ in range(args.num_groups)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
-    #create singleton environment
+    # Singleton env
     singleton_env = gym.make(args.env_id)
     singleton_obs, _ = singleton_env.reset(seed=args.seed)
 
-    # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
+
+    # Initial obs for all groups
     initial_obs = []
-
     for i in range(args.num_groups):
-        obs, _ = envs.envs[i].reset(seed=args.seed)
-        initial_obs.append(obs)
-    next_obs = torch.tensor(initial_obs, dtype=torch.float32).to(device)
-    next_done = torch.zeros(args.num_groups).to(device)
-    #print(next_obs, next_obs.shape)
-    mean_reward = np.zeros(args.num_iterations)
-    print(args.num_iterations)
-    for iteration in range(1, args.num_iterations + 1):
-        # Environment setup
-        obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
-        actions = torch.zeros((args.num_steps, args.num_groups) + envs.single_action_space.shape, dtype=torch.long).to(device)
-        logprobs = torch.zeros((args.num_steps, args.num_groups)).to(device)
-        logits = torch.zeros((args.num_steps, args.num_groups), dtype=torch.long).to(device)
-        rewards = torch.zeros((args.num_steps, args.num_groups), dtype=torch.float64).to(device)
-        dones = torch.zeros((args.num_steps, args.num_groups)).to(device)
-        group_steps = torch.ones(args.num_groups, dtype=torch.int32).to(device)
+        obs_i, _ = envs.envs[i].reset(seed=args.seed)
+        initial_obs.append(obs_i)
+    next_obs = torch.from_numpy(np.array(initial_obs, dtype=np.float32)).to(device)
+    next_done = torch.zeros(args.num_groups, device=device)
 
-        finish_iteration = np.array([False] * args.num_groups)
+    # If you want to keep a record of max return per rollout:
+    max_return_per_rollout = []
 
-        # Annealing the rate if instructed to do so.
+    while global_step < args.total_timesteps:
+        # ----- Anneal LR by progress (no iteration needed) -----
         if args.anneal_lr:
-            #more iterations, less learning rate
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.learning_rate
+            progress = min(1.0, float(global_step) / max(1, args.total_timesteps))
+            lrnow = (1.0 - progress) * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        cumulative_rewards = torch.zeros(args.num_groups).to(device)
-        '''print(next_obs)
-        for env in envs.envs:
-            print(env.unwrapped.state)'''
+        # ----- Rollout storage -----
+        obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape, device=device)
+        actions = torch.zeros((args.num_steps, args.num_groups) + envs.single_action_space.shape, dtype=torch.long, device=device)
+        logprobs = torch.zeros((args.num_steps, args.num_groups), device=device)
+        logits = torch.zeros((args.num_steps, args.num_groups), dtype=torch.long, device=device)
+        rewards = torch.zeros((args.num_steps, args.num_groups), dtype=torch.float32, device=device)
+        dones = torch.zeros((args.num_steps, args.num_groups), device=device)
+        group_steps = torch.ones(args.num_groups, dtype=torch.int32, device=device)
+
+        finish_iteration = np.zeros(args.num_groups, dtype=bool)
+
+        cumulative_rewards = torch.zeros(args.num_groups, device=device)
         starting_state = next_obs[0]
-        for step in range(0, args.num_steps):
+
+        # ----- Collect a rollout -----
+        for step in range(args.num_steps):
             if finish_iteration.all():
                 break
-            global_step += np.count_nonzero(finish_iteration == 0)
-            obs[step][~finish_iteration] = next_obs[~finish_iteration]
-            dones[step][~finish_iteration] = next_done[~finish_iteration]
+
+            # Only count active envs toward steps
+            global_step += int((~finish_iteration).sum())
+
+            obs[step, ~finish_iteration] = next_obs[~finish_iteration]
+            dones[step, ~finish_iteration] = next_done[~finish_iteration]
 
             with torch.no_grad():
                 action, logprob, _ = agent.get_action(next_obs)
 
-            actions[step][~finish_iteration] = action[~finish_iteration]
-            logprobs[step][~finish_iteration] = logprob[~finish_iteration].detach()
-            logits[step][~finish_iteration] = action[~finish_iteration]  # if logits really = action
+            actions[step, ~finish_iteration] = action[~finish_iteration]
+            logprobs[step, ~finish_iteration] = logprob[~finish_iteration].detach()
+            logits[step, ~finish_iteration] = action[~finish_iteration]  # here "logits" is just the chosen action
 
+            # Step envs on CPU, keep as numpy until batch convert
             next_obs_np, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
 
-            reward_tensor = torch.tensor(reward).to(device).view(-1)
-            rewards[step][~finish_iteration] = reward_tensor[~finish_iteration]
+            # Minimal-copy conversions
+            reward_tensor = torch.from_numpy(np.asarray(reward, dtype=np.float32)).to(device)
+            rewards[step, ~finish_iteration] = reward_tensor[~finish_iteration]
 
-            mask = torch.tensor(~finish_iteration).to(device)
-            cumulative_rewards += reward_tensor * mask.float()
+            mask_active = torch.from_numpy((~finish_iteration).astype(np.float32)).to(device)
+            cumulative_rewards += reward_tensor * mask_active
 
             next_done_np = np.logical_or(terminations, truncations)
             finish_iteration = np.logical_or(finish_iteration, next_done_np)
 
-            next_obs = torch.tensor(next_obs_np).to(device)
-            next_done = torch.tensor(next_done_np).float().to(device)
+            next_obs = torch.from_numpy(next_obs_np).float().to(device)
+            next_done = torch.from_numpy(next_done_np.astype(np.float32)).to(device)
 
             group_steps[~finish_iteration] += 1
 
-            if "final_info" in infos:   #if the episode is done (multiple parallel episodes)
+            if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
-        """take a step in the environment and log data. maybe take n steps instead of 1
-        this will be ri in advantages"""
-        #print(rewards)
-        #print(logprobs)
-        #print(cumulative_rewards)
-        #print(group_steps)
-        #print(global_step)
-        #print(cumulative_rewards.mean())
-
-        #next_obs = next_obs[0].repeat(args.num_groups, *[1] * (next_obs.ndim - 1))  # Sync next_obs across groups
-        #next_done = next_done[0].repeat(args.num_groups, *[1] * (next_done.ndim - 1))  # Sync next_done across groups
-
-        # bootstrap value if not done
+        # ----- Compute per-group advantages (normalized) -----
         with torch.no_grad():
-            advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards), nan=0.0)
-            #print(advantages)
-        #print(cumulative_rewards)
-        mean_reward[iteration-1] = torch.max(cumulative_rewards)
-        if any(r >= 200 for r in cumulative_rewards):
+            std = torch.std(cumulative_rewards)
+            if std == 0:
+                advantages = torch.zeros_like(cumulative_rewards)
+            else:
+                advantages = (cumulative_rewards - torch.mean(cumulative_rewards)) / std
+
+        # Track max return per rollout (no indexing by iteration)
+        max_return_per_rollout.append(float(cumulative_rewards.max().item()))
+        if bool((cumulative_rewards >= 200).any()):
             success += 1
 
-        #print(advantages)
-        #returns = advantages + values
+        # ----- Flatten by group (keeping valid steps per group) -----
+        b_obs, b_actions, b_logprobs = [], [], []
+        for g in range(args.num_groups):
+            valid = int(group_steps[g].item())
+            b_obs.append(obs[:valid, g])
+            b_actions.append(actions[:valid, g])
+            b_logprobs.append(logprobs[:valid, g])
 
-        # flatten the batch but keeping the group structure
-        b_obs = []
-        b_actions = []
-        b_logprobs = []
-        for group in range(args.num_groups):
-            valid_steps = group_steps[group]  # how many valid steps for this group
-            b_obs.append(obs[:valid_steps, group])            # take only valid steps
-            b_actions.append(actions[:valid_steps, group])
-            b_logprobs.append(logprobs[:valid_steps, group])
-        clipfracs = []
-        b_inds_per_group = [np.arange(group_steps[g]) for g in range(args.num_groups)]
-        #print(b_inds_per_group)
+        # (If you keep indices, make sure they're ints, not tensors.)
+        b_inds_per_group = [np.arange(int(group_steps[g].item())) for g in range(args.num_groups)]
 
-        for epoch in range(args.update_epochs):
-            total_policy_loss = 0
-            total_kl_penalty = 0
-            total_entropy_bonus = 0
+        # ----- Policy update -----
+        for _ in range(args.update_epochs):
+            total_policy_loss = 0.0
+            total_kl_penalty = 0.0
 
-            for group in range(args.num_groups):
-                #np.random.shuffle(b_inds_per_group[group])
-
-                mb_inds = b_inds_per_group[group]  # Use all indices at once
-                mb_obs = b_obs[group]
-                mb_actions = b_actions[group]
-                #print(mb_actions.shape)
+            for g in range(args.num_groups):
+                mb_obs = b_obs[g]
+                mb_actions = b_actions[g]
                 with torch.no_grad():
-                    mb_old_logprobs = b_logprobs[group]
-                    #print(mb_old_logprobs)
-                    #print(b_logprobs)
-                    #print(mb_inds)
-                mb_advantage = advantages[group]  # Use the single advantage per group
-                # Get new policy probabilities
-                #print(mb_obs, mb_actions)
-                #print(mb_obs.shape, mb_actions.shape)
-                _, new_logprobs, entropy = agent.get_action(mb_obs, mb_actions)
+                    mb_old_logprobs = b_logprobs[g]
+
+                mb_advantage = advantages[g]
+
+                _, new_logprobs, _ = agent.get_action(mb_obs, mb_actions)
                 log_ratio = new_logprobs - mb_old_logprobs
-                #print(mb_old_logprobs)
                 ratio = log_ratio.exp()
 
-                # Policy loss with clipping
                 pg_loss1 = -ratio * mb_advantage
                 pg_loss2 = -torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * mb_advantage
                 policy_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                # KL Divergence penalty
-
-                new_probs = new_logprobs.exp()
-                #print(new_probs)
-                old_probs = mb_old_logprobs.exp()
-                #print("#####################")
-                #print(old_probs)
-                prob_ratio = old_probs / new_probs
+                # Simple KL penalty from log-probs (avoid probs underflow)
                 with torch.no_grad():
-                    kl_elements = prob_ratio - torch.log(prob_ratio) - 1
-                #print(kl_elements)
-                kl_penalty = kl_elements.mean()
+                    # reverse ratio to approximate KL(new||old) or KL(old||new); you had a custom term:
+                    old_probs = mb_old_logprobs.exp()
+                    new_probs = new_logprobs.exp()
+                    prob_ratio = old_probs / new_probs
+                    kl_elements = prob_ratio - torch.log(prob_ratio) - 1.0
+                    kl_penalty = kl_elements.mean()
 
-                '''kl = (mb_old_logprobs - new_logprobs).mean()
-                kl_penalty = args.kl_coef * kl'''
-
-                # Entropy bonus
-                #entropy_bonus = args.ent_coef * entropy.mean()
-
-                # Accumulate losses across groups
                 total_policy_loss += policy_loss
                 total_kl_penalty += kl_penalty
-                #total_entropy_bonus += entropy_bonus
 
-            # Compute the mean loss over all groups
-            #final_policy_loss = (total_policy_loss + total_kl_penalty - total_entropy_bonus) / args.num_groups
             final_policy_loss = (total_policy_loss + args.kl_coef * total_kl_penalty) / args.num_groups
-            #print("########################################################################")
-            #print(total_policy_loss)
-            #print(args.kl_coef * total_kl_penalty)
 
-            # Backpropagation
             optimizer.zero_grad()
             final_policy_loss.backward()
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
 
-        # Take a step in the singleton environment
+        # ----- Sync groups to a common state from singleton env -----
         with torch.no_grad():
-            action, _, _ = agent.get_action(starting_state.unsqueeze(0))  # Add batch dim
-
-        obs, _, s_termination, s_truncation, _ = singleton_env.step(action.cpu().numpy()[0])
+            a_sync, _, _ = agent.get_action(starting_state.unsqueeze(0))
+        # ensure int for single env
+        obs_sync, _, s_term, s_trunc, _ = singleton_env.step(int(a_sync.item()))
         state_to_copy = copy.deepcopy(singleton_env.unwrapped.state)
-        # reset singleton env if terminated o rtruncated
-        if s_termination or s_truncation:
+        #print(state_to_copy)
+        if s_term or s_trunc:
             singleton_env.reset()
 
-        # Fully reset vector env and override state
         envs.reset()
         obs_list = []
         for i in range(args.num_groups):
             envs.envs[i].unwrapped.state = copy.deepcopy(state_to_copy)
-            #obs_list.append(np.array(envs.envs[i].unwrapped.state, dtype=np.float32))
             obs_i, _ = envs.envs[i].reset()
             obs_list.append(obs_i)
+        next_obs = torch.from_numpy(np.array(obs_list, dtype=np.float32)).to(device)
 
-        next_obs = torch.tensor(np.array(obs_list)).to(device)
-
-
-        #print("done", )
+        # ----- Evaluation (greedy) -----
         agent.eval()
         eval_env = gym.make(args.env_id)
-        # Evaluate using greedy actors
         eval_rewards = []
-
-        # Deepcopy the agent so the evaluation doesn't interfere with training
-        #eval_agent = copy.deepcopy(agent)
-        #eval_agent.eval()  # Optional: deactivate dropout, batchnorm if present
-
-        for _ in range(10):  # Run 10 greedy evaluations
-            eval_obs, _ = eval_env.reset()
-            eval_obs = torch.tensor(eval_obs, dtype=torch.float32).to(device).unsqueeze(0)  # Add batch dim
-            eval_done = False
-            eval_total_reward = 0
-
-            while not eval_done:
+        for _ in range(10):
+            eo, _ = eval_env.reset()
+            eo = torch.tensor(eo, dtype=torch.float32, device=device).unsqueeze(0)
+            done = False
+            total = 0.0
+            while not done:
                 with torch.no_grad():
-                    #eval_logits = agent.actor(eval_obs)
-                    #eval_action = torch.argmax(eval_logits, dim=-1).item()
-                    eval_action, _, _ = agent.get_action(eval_obs)
-
-                eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
-                eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
-                eval_total_reward += eval_reward
-                eval_done = eval_terminated or eval_truncated
-
-            eval_rewards.append(eval_total_reward)
-        eval_mean_reward = np.average(eval_rewards)
-        #writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
-
-        # Optional: Close the eval environment after use
+                    act, _, _ = agent.get_action(eo)
+                no, r, t, tr, _ = eval_env.step(int(act.item()))
+                eo = torch.tensor(no, dtype=torch.float32, device=device).unsqueeze(0)
+                total += float(r)
+                done = t or tr
+            eval_rewards.append(total)
         eval_env.close()
+        agent.train()
 
+        eval_mean_reward = float(np.mean(eval_rewards))
 
-        writer.add_scalar("charts/kl_divergence", total_kl_penalty.item(), global_step)
-
-        # record rewards for plotting purposes
-        #print(global_step)
+        # ----- Logging (by global_step, not iteration) -----
+        writer.add_scalar("charts/kl_divergence", float(total_kl_penalty), global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("reward/mean_reward_vs_steps", eval_mean_reward, global_step)
         writer.add_scalar("reward/mean_reward_vs_time", eval_mean_reward, time.time() - start_time)
-        #writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
-        writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
-        #print("SPS:", int(global_step / (time.time() - start_time)))
+        writer.add_scalar("losses/total_loss", float(final_policy_loss), global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     return success
+
 
 if __name__ == "__main__":
     #for i in [2,4]:

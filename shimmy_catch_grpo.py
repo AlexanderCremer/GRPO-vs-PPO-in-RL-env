@@ -40,7 +40,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "GRPO"
+    wandb_project_name: str = "GRPO_additional_env"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -50,7 +50,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 200000
     """total timesteps of the experiments"""
     # best so far 1e-2
     learning_rate: float = 1e-3
@@ -133,7 +133,7 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy()
 
 
-def train(G, seed=1, env="CartPole-v1"):
+def train(G, seed=1, env="bsuite/catch-v0"):
     success = 0
 
     args = tyro.cli(Args)
@@ -201,7 +201,7 @@ def train(G, seed=1, env="CartPole-v1"):
     next_done = torch.zeros(args.num_groups).to(device)
 
     mean_reward = np.zeros(args.num_iterations)
-    for iteration in range(1, args.num_iterations + 1):
+    while global_step < args.total_timesteps:
         # Environment setup
         obs = torch.zeros((args.num_steps, args.num_groups) + envs.single_observation_space.shape).to(device)
         actions = torch.zeros((args.num_steps, args.num_groups) + envs.single_action_space.shape, dtype=torch.long).to(device)
@@ -216,7 +216,7 @@ def train(G, seed=1, env="CartPole-v1"):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             #more iterations, less learning rate
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
+            frac = min(1.0, float(global_step) / max(1, args.total_timesteps))
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
@@ -278,7 +278,7 @@ def train(G, seed=1, env="CartPole-v1"):
             advantages = torch.nan_to_num((cumulative_rewards - torch.mean(cumulative_rewards))/ torch.std(cumulative_rewards), nan=0.0)
             #print(advantages)
         #print(cumulative_rewards)
-        mean_reward[iteration-1] = torch.max(cumulative_rewards)
+        #mean_reward[iteration-1] = torch.max(cumulative_rewards)
         if any(r >= 200 for r in cumulative_rewards):
             success += 1
 
@@ -410,20 +410,16 @@ def train(G, seed=1, env="CartPole-v1"):
             while not eval_done:
                 with torch.no_grad():
                     eval_obs = torch.flatten(eval_obs).to(device)
-                    eval_logits = agent.actor(eval_obs)
-                    eval_action = torch.argmax(eval_logits, dim=-1).item()
-                    #eval_action, _, _ = agent.get_action(eval_obs)
+                    eval_action, _, _ = agent.get_action(eval_obs)
 
                 eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
                 eval_total_reward += eval_reward
                 eval_done = eval_terminated or eval_truncated
-
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
-        print(f"Iteration {iteration}, Mean Greedy Evaluation Reward: {eval_mean_reward:.2f}")
-        writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
-
+        writer.add_scalar("reward/mean_reward_vs_steps", eval_mean_reward, global_step)
+        writer.add_scalar("reward/mean_reward_vs_time", eval_mean_reward, time.time() - start_time)
         # Optional: Close the eval environment after use
         eval_env.close()
 
@@ -433,8 +429,8 @@ def train(G, seed=1, env="CartPole-v1"):
         # record rewards for plotting purposes
         #print(global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
-        writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
+        #writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
+        #writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("losses/total_loss", final_policy_loss.item(), global_step)
         #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)

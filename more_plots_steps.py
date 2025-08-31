@@ -120,8 +120,8 @@ def export_and_update_runs(
 # Example usage:
 export_and_update_runs(
     entity="akcremer11a",
-    project_source="GRPO",
-    group="Cartpole_G4",
+    project_source="GRPO_gymnasium",
+    group="Cartpole_G10",
     project_final="Final",
     y_metric_key="reward/mean_reward",
     y_metric_key_csv="on-policy cumulative reward",

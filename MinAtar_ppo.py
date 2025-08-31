@@ -31,9 +31,9 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "PPO"
+    wandb_project_name: str = "PPO_additional_env"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -43,7 +43,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 200000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
 
@@ -134,15 +134,15 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
 
-def train(seed=1, env="CartPole-v1"):
+def train(seed=1, env="MinAtar/Breakout-v1"):
     args = tyro.cli(Args)
     args.env_id = env
+    args.seed = seed
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = 1000
+    args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
-    args.seed = seed
     if args.track:
         import wandb
 
@@ -352,7 +352,8 @@ def train(seed=1, env="CartPole-v1"):
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
-        writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
+        writer.add_scalar("reward/mean_reward_vs_steps", eval_mean_reward, global_step)
+        writer.add_scalar("reward/mean_reward_vs_time", eval_mean_reward, time.time() - start_time)
         # Optional: Close the eval environment after use
         eval_env.close()
 
@@ -360,7 +361,6 @@ def train(seed=1, env="CartPole-v1"):
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-        print(eval_mean_reward)
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
@@ -370,8 +370,8 @@ def train(seed=1, env="CartPole-v1"):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
-        writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
+        #writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
+        #writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()

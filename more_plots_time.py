@@ -129,21 +129,21 @@ def export_and_update_runs_relative_time(
 
 export_and_update_runs_relative_time(
      entity="akcremer11a",
-     project_source="GRPO",
-     group="CartPole_G2",
-     project_final="Final",
-     y_metric_key_source="evaluation/mean_greedy_reward",
-     y_metric_key_csv="greedy cumulative rewards",
+     project_source="PPO_gymnasium",
+     group="CartPole_PPO",
+     project_final="PPO_paper",
+     y_metric_key_source="evaluation/mean_reward_vs_time",
+     y_metric_key_csv="mean_reward_vs_time",
      output_dir="wandb_rewards_csvs"
 )
 
 
 export_and_update_runs_relative_time(
      entity="akcremer11a",
-     project_source="GRPO",
-     group="CartPole_G2",
-     project_final="Final",
-     y_metric_key_source="reward/mean_reward",
-     y_metric_key_csv="on-policy cumulative rewards",
+     project_source="PPO_gymnasium",
+     group="Acrobot_PPO",
+     project_final="PPO_paper",
+     y_metric_key_source="evaluation/mean_reward_vs_time",
+     y_metric_key_csv="mean_reward_vs_time",
      output_dir="wandb_rewards_csvs"
 )

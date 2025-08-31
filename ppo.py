@@ -29,7 +29,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "PPO"
+    wandb_project_name: str = "PPO_gymnasium"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -39,14 +39,14 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 1500000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
 
     """the learning rate of the optimizer"""
     num_envs: int = 10
     """the number of parallel game environments"""
-    num_steps: int = 200
+    num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -134,7 +134,7 @@ def train(seed=1):
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = 1000
+    args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
     args.seed = seed
@@ -332,17 +332,17 @@ def train(seed=1):
 
             while not eval_done:
                 with torch.no_grad():
-                    eval_logits = eval_agent.actor(eval_obs)
-                    eval_action = torch.argmax(eval_logits, dim=-1).item()
+                    eval_action, _, _, _ = eval_agent.get_action_and_value(eval_obs)
 
-                eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action)
+                eval_next_obs, eval_reward, eval_terminated, eval_truncated, _ = eval_env.step(eval_action.item())
                 eval_obs = torch.tensor(eval_next_obs, dtype=torch.float32).to(device).unsqueeze(0)
                 eval_total_reward += eval_reward
                 eval_done = eval_terminated or eval_truncated
 
             eval_rewards.append(eval_total_reward)
         eval_mean_reward = np.average(eval_rewards)
-        writer.add_scalar("evaluation/mean_greedy_reward", eval_mean_reward, iteration)
+        writer.add_scalar("evaluation/mean_reward_vs_steps", eval_mean_reward, global_step)
+        writer.add_scalar("evaluation/mean_reward_vs_time", eval_mean_reward, time.time() - start_time)
 
         # Optional: Close the eval environment after use
         eval_env.close()
@@ -361,8 +361,8 @@ def train(seed=1):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
-        writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
+        #writer.add_scalar("reward/mean_reward", cumulative_rewards.mean().item(), global_step)
+        #writer.add_scalar("reward/max_reward", cumulative_rewards.max().item(), global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
 
